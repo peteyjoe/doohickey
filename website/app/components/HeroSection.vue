@@ -6,6 +6,12 @@
 </template>
 
 <style scoped>
-/* scoped = these styles only apply to this component */
-.hero { text-align: center; padding: 4rem 1rem; }
+.hero {
+  text-align: center;
+  padding: 6rem 1rem;
+  background: #0f172a;   /* dark navy background */
+  color: white;
+}
+.hero h1 { font-size: 3rem; margin-bottom: 1rem; }
+.hero p { font-size: 1.25rem; color: #94a3b8; } /* muted subtitle */
 </style>
