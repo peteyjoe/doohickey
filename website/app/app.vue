@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { T } from 'vue-router/dist/index-D2jnW06w.js';
+import SiteHeader from '~/components/SiteHeader.vue'
+
 
 </script>
 

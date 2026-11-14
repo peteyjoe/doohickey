@@ -3,7 +3,7 @@
     <h2>Team</h2>
     <div class="members">
       <div v-for="m in members" :key="m.name" class="card">
-        <h3>{{ m.name }}</h3>
+        <h3>{{ m    .name }}</h3>
         <p>{{ m.role }}</p>
       </div>
     </div>
@@ -13,8 +13,9 @@
 <script setup>
 // fill in real names and roles once teammates reply
 const members = [
-  { name: 'Bryan', role: 'Front end' },
-  { name: 'Peter', role: 'TBD' },
+  { name: 'Bryan Ramirez', role: 'Front end' },
+  { name: 'Peter ', role: 'Back end' },
+  { name: 'Joshua Klepinger', role: 'Full stack' }
 ]
 </script>
 
