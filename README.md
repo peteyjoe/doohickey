@@ -1,9 +1,132 @@
 # RP2350 FIDO2 development
 
 This flake provides an Embassy/Rust firmware toolchain and Node.js 26 LTS with
-npm for Nuxt. It supports **x86_64-linux and aarch64-linux**, on NixOS or other
-Linux distributions with Nix installed. Its only inputs are nixpkgs and
-rust-overlay, with the overlay following the same nixpkgs revision.
+npm for Nuxt. It supports Linux (`x86_64-linux`, `aarch64-linux`), including
+**WSL 2**, and macOS on **Apple Silicon** (`aarch64-darwin`) and **Intel**
+(`x86_64-darwin`). The Rust overlay follows the main nixpkgs input.
+
+Linux and Apple Silicon use the pinned nixos-unstable input. Intel Macs use a
+separate pinned `nixpkgs-26.05-darwin` input because
+[nixpkgs 26.11 dropped Intel macOS support](https://nixos.org/manual/nixpkgs/unstable/release-notes#x86_64-darwin-26.11).
+That release receives security fixes through the end of 2026; Intel support
+will need revisiting afterward. Host package versions can differ between these
+inputs; all hosts use the same Rust overlay and embedded target.
+
+## Install Nix
+
+On NixOS, Nix is already installed. On other Linux distributions with systemd,
+install Nix using the [official multi-user installer](https://nix.dev/manual/nix/latest/installation/installing-binary.html):
+
+```sh
+sh <(curl -L https://nixos.org/nix/install) --daemon
+```
+
+Run this from Bash as your normal user; the installer requests sudo when needed.
+Open a new terminal afterward. For macOS and Windows, follow the setup below.
+
+### macOS
+
+Install Apple's Command Line Tools if they are not already installed (this also
+provides Git for cloning the repository):
+
+```sh
+xcode-select --install
+```
+
+In Terminal, install Nix using the same official multi-user installer:
+
+```sh
+sh <(curl -L https://nixos.org/nix/install) --daemon
+```
+
+Open a new terminal, enter your checkout, and use the `nix develop` command below.
+On Apple Silicon, use a native ARM terminal rather than a terminal running under
+Rosetta. Nix selects the shell for your host automatically. No nix-darwin or
+Homebrew setup is required for this environment.
+
+macOS does not use udev; skip the Linux permissions section. A Raspberry Pi Debug
+Probe (CMSIS-DAP) needs no extra driver according to the
+[probe-rs setup guide](https://probe.rs/docs/getting-started/probe-setup/).
+If macOS asks to allow a USB accessory, allow it. Check the connection with
+`probe-rs list` for a debug probe or `picotool info` for a board in BOOTSEL mode.
+For USB CDC serial, find the port with `ls /dev/cu.usb*` and run, for example,
+`tio /dev/cu.usbmodem1234` using your actual port name. Close other programs using
+the device before flashing or opening it from Chrome.
+
+### Windows with WSL 2
+
+Use a Linux distribution in **WSL 2**, rather than running Nix in PowerShell or
+WSL 1. In an administrator PowerShell, install/update WSL and check the distro's
+version:
+
+```powershell
+wsl --install -d Ubuntu
+wsl --update
+wsl --list --verbose
+```
+
+Restart Windows if requested and finish Ubuntu's first-run user setup. For an
+existing WSL 1 distro, convert it with `wsl --set-version Ubuntu 2` (substitute
+its actual name).
+
+Inside Ubuntu, check that systemd is running with `systemctl status`. If needed,
+merge this into `/etc/wsl.conf`, preserving existing settings:
+
+```ini
+[boot]
+systemd=true
+```
+
+Run `wsl --shutdown` in PowerShell, then reopen Ubuntu. See Microsoft's
+[systemd instructions](https://learn.microsoft.com/en-us/windows/wsl/systemd).
+Install Git, curl, and certificates inside Ubuntu if missing:
+
+```sh
+sudo apt update
+sudo apt install git curl ca-certificates
+```
+
+Run the Linux Nix installer above **inside Ubuntu**, open a new Ubuntu terminal,
+and clone this repository under your Linux home directory (for example,
+`~/src/`), avoiding `/mnt/c/` for build performance. Enter the checkout and use
+`nix develop` below. WSL uses the Linux shell for its architecture.
+
+Building firmware and running Nuxt do not require USB forwarding. To flash or
+use serial/debug tools inside WSL, follow Microsoft's
+[USB forwarding guide](https://learn.microsoft.com/en-us/windows/wsl/connect-usb).
+With usbipd-win 5 or newer, install and share the device from an administrator
+PowerShell (replace `4-4` with its bus ID):
+
+```powershell
+winget install --interactive --exact dorssel.usbipd-win
+usbipd list
+usbipd bind --busid 4-4
+```
+
+Keep Ubuntu open. Attach the shared device from a normal PowerShell:
+
+```powershell
+usbipd attach --wsl --busid 4-4
+```
+
+Inside the Nix shell in Ubuntu, verify it with `lsusb`, then use `probe-rs list`
+or `picotool info`. Follow the Linux device permissions section below as well;
+forwarding alone does not grant your Linux user access. Ensure udev is running
+with `systemctl status systemd-udevd`; if inactive, start it with
+`sudo systemctl start systemd-udevd`. Use a device group for headless WSL sessions
+where `uaccess` does not grant access.
+
+Reattach after unplugging or rebooting into BOOTSEL; the bus ID or USB identity
+may change, requiring another bind. To return the device to Windows:
+
+```powershell
+usbipd detach --busid 4-4
+```
+
+An attached device is unavailable to Windows apps, including Chrome/Edge. Detach
+it before using a Windows browser for WebUSB, Web Serial, or WebAuthn. You can
+run Nuxt in WSL and open `http://localhost:3000` in the Windows browser; stop WSL
+serial/debug tools before switching device ownership.
 
 ## Enter the environment
 
@@ -20,7 +143,7 @@ nix --extra-experimental-features 'nix-command flakes' develop
 ```
 
 Commit `flake.nix` and `flake.lock` together. The lock pins the Rust toolchain and
-all Nix packages; `nix flake update` intentionally updates both inputs. In a Git
+all Nix packages; `nix flake update` intentionally updates the inputs. In a Git
 checkout, new flake files must be added to Git before Nix can see them.
 
 The shell includes rustc, Cargo, rustfmt, Clippy, rust-analyzer, Rust sources,
@@ -51,7 +174,7 @@ runner = "probe-rs run --chip RP235x"
 Use Embassy's RP235x examples for the Cargo features, linker scripts, memory
 layout, boot metadata, and USB setup appropriate to your board. Run Cargo from
 the firmware directory so it loads this configuration. The shell leaves the
-global Cargo target unset so host tools and tests can build for Linux.
+global Cargo target unset so host tools and tests can build for the host OS.
 
 With an SWD probe, such as a Raspberry Pi Debug Probe:
 
@@ -89,7 +212,8 @@ gdb target/thumbv8m.main-none-eabihf/release/firmware-name \
 
 The flake uses `openocd-rp2040` despite its name because it packages Raspberry
 Pi's fork with [RP2350 support](https://github.com/raspberrypi/openocd/blob/sdk-2.2.0/tcl/target/rp2350.cfg).
-For serial logs, use `tio /dev/ttyACM0` (adjust the device and baud rate as needed).
+For serial logs on Linux/WSL, use `tio /dev/ttyACM0`; on macOS, use
+`tio /dev/cu.usbmodem1234` (adjust the device and baud rate as needed).
 Close the terminal before opening the same port through Web Serial.
 
 ## Nuxt with npm

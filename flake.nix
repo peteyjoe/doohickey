@@ -3,6 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Nixpkgs 26.11 dropped Intel macOS; 26.05 is its last supported release.
+    nixpkgs-intel-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -10,17 +12,24 @@
   };
 
   outputs =
-    { nixpkgs, rust-overlay, ... }:
+    {
+      nixpkgs,
+      nixpkgs-intel-darwin,
+      rust-overlay,
+      ...
+    }:
     let
       # Host architectures; the firmware is cross-compiled for the RP2350.
       systems = [
         "x86_64-linux"
         "aarch64-linux"
+        "aarch64-darwin"
+        "x86_64-darwin"
       ];
       forEachSystem = nixpkgs.lib.genAttrs systems;
       pkgsFor =
         system:
-        import nixpkgs {
+        import (if system == "x86_64-darwin" then nixpkgs-intel-darwin else nixpkgs) {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
