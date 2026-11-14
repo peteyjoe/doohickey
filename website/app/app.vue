@@ -3,5 +3,7 @@
     <NuxtRouteAnnouncer />
     <SiteHeader />
     <HeroSection />
+    <HowItWorks />
+    <FlashSection />
   </UApp>
 </template>
