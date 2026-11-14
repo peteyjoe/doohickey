@@ -1,1 +1,3 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
 body { margin:0; font-family: system-ui, sans-serif; background: #0f172a; color: white} 

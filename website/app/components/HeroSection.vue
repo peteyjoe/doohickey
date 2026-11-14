@@ -1,7 +1,7 @@
 <template>
   <section class="hero">
-    <h1>FIDO2 Security Key</h1>
-    <p>An open-source hardware key built on the RP2350</p>
+    <h1>Le-Key</h1>
+    <p>An open-source hardware key built on the RP2350 for secure authentication</p>
   </section>
 </template>
 

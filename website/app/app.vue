@@ -1,6 +1,7 @@
 <template>
-  <div>
+  <UApp>  <!-- required wrapper for Nuxt UI -->
     <NuxtRouteAnnouncer />
-    <HeroSection />  <!-- auto-imported from components/, filename = tag name -->
-  </div>
+    <SiteHeader />
+    <HeroSection />
+  </UApp>
 </template>
