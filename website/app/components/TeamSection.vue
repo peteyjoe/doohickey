@@ -38,7 +38,7 @@ function initials(name) {
 </script>
 
 <style scoped>
-.team { padding: 7rem 0 6rem; background: var(--left); color: var(--cream); }
+.team { padding: 7rem 0 6rem; background: var(--right); color: var(--cream); }
 .team *, .team *::before, .team *::after { box-sizing: border-box; }
 .inner { max-width: 1100px; margin: 0 auto; padding: 0 2rem; }
 h2 { margin: 0 0 1rem; font-size: clamp(2rem, 4vw, 3rem); line-height: 1.1; color: var(--cream); }

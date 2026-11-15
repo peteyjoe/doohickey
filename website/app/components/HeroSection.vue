@@ -11,6 +11,7 @@
         <a href="#how">How it works</a>
         <a href="#demo">Demo</a>
         <a href="#flash">Flash</a>
+        <a href="#backup">Backup</a>
         <a href="#team">Team</a>
       </nav>
     </header>

@@ -7,6 +7,7 @@
     <HowItWorks />
     <DemoSection />
     <FlashSection />
+    <BackupSection />
     <TeamSection />
   </UApp>
 </template>
