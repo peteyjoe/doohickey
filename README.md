@@ -12,6 +12,16 @@ That release receives security fixes through the end of 2026; Intel support
 will need revisiting afterward. Host package versions can differ between these
 inputs; all hosts use the same Rust overlay and embedded target.
 
+## Alpha release and upgrade plan
+
+The [alpha roadmap](docs/alpha-roadmap.md) tracks the work needed for a usable
+authenticator: durable initialization, CTAP algorithms, signed releases,
+browser installation/setup, persistence across updates and hardware qualification.
+The [browser flashing and secure-boot design](docs/web-flashing-and-secure-boot.md)
+records the PicoFlash investigation and the proposed WebUSB/Web Serial workflow.
+Browser flashing, secure-boot activation and application setup are planned work;
+the current web app is a serial test console.
+
 ## Install Nix
 
 On NixOS, Nix is already installed. On other Linux distributions with systemd,
@@ -158,23 +168,43 @@ The installed embedded target is `thumbv8m.main-none-eabihf`, for the RP2350's
 Arm Cortex-M33 cores, matching [Embassy's RP235x configuration](https://github.com/embassy-rs/embassy/blob/main/examples/rp235x/.cargo/config.toml).
 This environment assumes Arm firmware; the RP2350's alternative RISC-V cores
 would need a different target and firmware setup. Embassy is a Cargo dependency
-you add to the firmware crate, rather than a Nix package.
+managed in `firmware/Cargo.toml`, rather than a Nix package.
 
-Once you create a firmware crate (for example, in `firmware/`), put the target
-and runner in **that crate's** `.cargo/config.toml`:
+The `firmware/` crate runs the [initialization coordinator](firmware/src/init/README.md)
+after hardware setup, then starts a composite USB device with FIDO HID transport
+and CDC ACM serial. It reports startup status through RTT/defmt and serial INFO.
+CTAP credential commands and serial authentication still need their application
+backends. Eligible device setup uses a fresh three-second hold and release on
+GPIO 23 (active low, pull-up). It verifies durable settings, credential key and
+completion records before reporting base initialization ready. Real root writes
+additionally require the explicit `otp-provisioning` feature; use
+`insecure-test-otp` for flash-only development. Secure boot remains separate.
+
+The chip and flash defaults remain RP2350A with 4 MiB flash. Check the chip
+feature (`rp235xa`) in `firmware/Cargo.toml`, the flash-size build option below,
+and the button pin in `firmware/src/main.rs` against your board.
+Use `rp235xb` instead for an RP2350B. A non-wireless Pico 2 has its onboard
+LED on GPIO 25; a Pico 2 W uses a different LED connection.
+
+The dependencies, boot/linker layout, and entry point follow
+[Embassy's RP235x examples](https://github.com/embassy-rs/embassy/tree/main/examples/rp235x).
+`build.rs` renders `memory.x.in` into the linker's `memory.x` and generates
+`flash_layout.rs` for the storage driver from the same configuration. It also
+enables the runtime and defmt linker scripts. Commit `firmware/Cargo.lock` to
+pin the firmware dependencies.
+
+The target and SWD runner are configured in `firmware/.cargo/config.toml`:
 
 ```toml
 [build]
 target = "thumbv8m.main-none-eabihf"
 
-[target.thumbv8m.main-none-eabihf]
+[target."thumbv8m.main-none-eabihf"]
 runner = "probe-rs run --chip RP235x"
 ```
 
-Use Embassy's RP235x examples for the Cargo features, linker scripts, memory
-layout, boot metadata, and USB setup appropriate to your board. Run Cargo from
-the firmware directory so it loads this configuration. The shell leaves the
-global Cargo target unset so host tools and tests can build for the host OS.
+Run Cargo from the firmware directory so it loads this configuration. The shell
+leaves the global Cargo target unset so host tools and tests can build for the host OS.
 
 With an SWD probe, such as a Raspberry Pi Debug Probe:
 
@@ -182,19 +212,19 @@ With an SWD probe, such as a Raspberry Pi Debug Probe:
 probe-rs list
 cd firmware
 cargo build --release
-cargo run --release
+DEFMT_LOG=debug cargo run --release
 cargo size --release -- -A
 ```
 
-`probe-rs run` flashes and displays RTT/defmt logs when the firmware implements
-them. `DEFMT_LOG` defaults to `info`; override it as needed.
+`probe-rs run` flashes and displays RTT/defmt logs. `DEFMT_LOG` defaults to
+`info`; the current firmware logs the initialization state and reason at startup.
 
 Without a probe, hold BOOTSEL while connecting the board, then use the firmware's
-ELF file (replace `firmware-name` with your binary's name):
+ELF file (run from `firmware/`):
 
 ```sh
 picotool info
-picotool load -u -v -x -t elf target/thumbv8m.main-none-eabihf/release/firmware-name
+picotool load -u -v -x -t elf target/thumbv8m.main-none-eabihf/release/firmware
 ```
 
 For a GDB session, run this in one terminal inside the shell:
@@ -206,7 +236,7 @@ openocd -f interface/cmsis-dap.cfg -f target/rp2350.cfg -c 'adapter speed 5000'
 Then, from the firmware directory in another shell:
 
 ```sh
-gdb target/thumbv8m.main-none-eabihf/release/firmware-name \
+gdb target/thumbv8m.main-none-eabihf/release/firmware \
   -ex 'target extended-remote localhost:3333'
 ```
 
@@ -215,6 +245,218 @@ Pi's fork with [RP2350 support](https://github.com/raspberrypi/openocd/blob/sdk-
 For serial logs on Linux/WSL, use `tio /dev/ttyACM0`; on macOS, use
 `tio /dev/cu.usbmodem1234` (adjust the device and baud rate as needed).
 Close the terminal before opening the same port through Web Serial.
+
+## Persistent storage
+
+`firmware/src/storage.rs` provides an async key-value store backed by
+[`sequential-storage`](https://docs.rs/sequential-storage/8.0.2/). Import it in
+another firmware module with `use crate::storage::Storage`.
+
+Create one instance using the flash peripheral and DMA channel 0, then keep it
+in the task responsible for storage. For example, inside async initialization
+after `embassy_rp::init`:
+
+```rust
+let mut storage = crate::storage::Storage::new(peripherals.FLASH, peripherals.DMA_CH0);
+storage.initialize_metadata().await.unwrap();
+if let Some(metadata) = storage.metadata().await.unwrap() {
+    defmt::info!("Storage version: {}", metadata.version);
+}
+storage.store(1, b"hello").await.unwrap();
+
+let mut bytes = [0u8; 32];
+if let Some(length) = storage.read(1, &mut bytes).await.unwrap() {
+    defmt::info!("Stored value: {=[u8]}", &bytes[..length]);
+}
+```
+
+Key `0` is reserved for a single CRC-protected metadata record with two fields:
+`magic` (`DOOHICKEY`) and `version`. `version` comes directly from the firmware
+package version in `firmware/Cargo.toml` (`CARGO_PKG_VERSION`); there are no
+separate schema or layout versions. Application `read` and `store` calls reject
+key `0`; use `metadata()` to inspect it.
+
+Call `initialize_metadata()` before application reads/writes. It creates the
+record only when the entire partition is erased. A nonempty store without
+metadata returns `MissingMetadata`; invalid magic/version encoding returns
+`InvalidMetadata`. Neither case automatically formats the partition. As with
+other reads, the storage library can repair interrupted writes while looking
+up records; metadata is not a raw partition-header validation mechanism.
+
+Existing metadata keeps its recorded version across firmware updates. Compare
+`metadata.version` with `crate::storage::VERSION` and check compatibility or
+migrate before using existing records. Afterward, explicitly call
+`update_metadata_version().await` to record the running firmware's version.
+It does not migrate application data itself or write again if versions match.
+Do not automatically replace a different version at every boot, since that
+would hide the version needed to decide which migration is required.
+
+Application keys are `u32` values starting at `1`, excluding the reserved OTP
+test keys `0xFFFFFF00..=0xFFFFFF02`; values are raw byte slices
+up to 1024 bytes. Storing the same
+key replaces its value. Reads return `None` for missing keys or `Some(length)`
+for existing values, including empty ones. A too-small read buffer or oversized
+value returns an error. Use a consistent serialization format for structured
+data. Await operations to completion; do not cancel flash operations with a
+timeout. Writes and erases can briefly block interrupts even with an async API.
+
+For secrets, use [`EncryptedStorage`](firmware/src/storage/encrypted.rs). With
+`master` explicitly loaded from OTP and `rng` seeded through `HardwareEntropy`:
+
+```rust,ignore
+use crate::storage::{EncryptedStorage, RecordKind};
+use zeroize::Zeroizing;
+
+storage.initialize_metadata().await?;
+let mut secrets = EncryptedStorage::new(&mut storage, &master, &mut rng);
+secrets.store(42, RecordKind::Credential, encoded_credential).await?;
+
+let mut plaintext = Zeroizing::new([0u8; 983]);
+if let Some(length) = secrets
+    .read(42, RecordKind::Credential, &mut plaintext[..])
+    .await?
+{
+    // Decode/use plaintext[..length]; the buffer is wiped when dropped.
+}
+```
+
+This wrapper uses the existing XChaCha20-Poly1305 cipher and derives its key
+once at construction. Each write gets a fresh nonce, and the authenticated
+context binds the storage key, record kind, and stable wrapper encoding version
+(`1`, independent of the firmware package version). The supported kinds are
+`Credential`, `PairingKey`, and `Configuration`; their numeric tags must remain
+stable. Use explicitly versioned serialization for each application's payload.
+
+The plaintext limit is **983 bytes**, including any application serialization
+headers. Empty values are supported. Reads return `None` only for missing keys;
+invalid envelopes, wrong keys/kinds, and authentication failures return errors.
+The entire caller output is cleared on entry, and plaintext is copied only
+after the complete record authenticates. Temporary buffers are zeroized;
+callers must also wipe their own plaintext when finished. The wrapper retains
+only a derived cipher key and borrows the store/RNG. Metadata and OTP test keys
+remain reserved. It performs no automatic key generation or plaintext migration.
+
+Flash layout is configured in `firmware/build.rs`. The firmware region is always
+3 MiB; storage starts at flash offset `0x00300000` and uses the remaining
+capacity. The `flash-16mb` Cargo feature selects the larger chip; no feature
+means 4 MiB. The generated Rust constants and linker regions always use the
+same selection. `memory.x.in` is the shared template; generated files live in
+Cargo's build output directory and should not be edited or committed.
+
+| Build | Total flash | Storage offsets | Storage capacity |
+| --- | --- | --- | --- |
+| Default | 4 MiB | `0x00300000..0x00400000` | 1 MiB |
+| `flash-16mb` | 16 MiB | `0x00300000..0x01000000` | 13 MiB |
+
+This boundary was previously `0x003C0000`. Data written with that older layout
+needs an explicit backup/migration or storage reset before using the new layout;
+changing the partition start does not migrate existing records.
+
+Build from `firmware/`, keeping the two artifacts in separate directories:
+
+```sh
+cargo build --release --target-dir target/4mb
+cargo build --release --features flash-16mb --target-dir target/16mb
+```
+
+The ELF files are respectively:
+
+```text
+target/4mb/thumbv8m.main-none-eabihf/release/firmware
+target/16mb/thumbv8m.main-none-eabihf/release/firmware
+```
+
+To build, flash, and see startup logs through an SWD probe, run the appropriate
+command:
+
+```sh
+DEFMT_LOG=debug cargo run --release --target-dir target/4mb
+DEFMT_LOG=debug cargo run --release --features flash-16mb --target-dir target/16mb
+```
+
+For BOOTSEL flashing, substitute the appropriate ELF path in the `picotool`
+command above. Flash the 16 MiB variant only onto a board with 16 MiB of flash.
+Changing the chip package feature (`rp235xa`/`rp235xb`) is independent of the
+external flash capacity.
+
+Construction does not erase or format the partition. The startup coordinator
+inspects the partition and required records without generating secrets. Explicit
+button-confirmed setup can create defaults and provision/seal the root when the
+selected backend/build permits it. Metadata reads retain the storage library's
+existing interrupted-write repair behavior. Application read/store calls also
+reserve coordinator keys `0xFFFFFE00..=0xFFFFFE02`.
+
+Records survive reset, but a full-chip erase during flashing removes them.
+The raw store has wear leveling and CRC checks; use `EncryptedStorage` to
+encrypt secrets. Neither layer provides transactions spanning multiple keys,
+rollback protection, or secure deletion. Old values, including legacy plaintext,
+may remain physically in flash after replacement.
+
+## USB composite device
+
+[`firmware/src/usb`](firmware/src/usb/README.md) uses Embassy USB to expose FIDO
+HID plus CDC ACM serial through the board's native USB port. Development VID/PID
+are `c0de:d001`. HID supports CTAPHID INIT/PING, fragmentation, arbitration,
+timeouts, cancellation, and keepalives. Known CTAP commands currently return
+OperationDenied until the command backend is implemented.
+
+CDC accepts length-prefixed binary frames (`u16` big-endian length followed by
+payload), with a public `INFO` request returning device information. The current
+handler rejects other commands; authenticated backups are not enabled. RTT logs
+remain on the debug probe. See the USB guide for connection handling and the
+on-device smoke test:
+
+```sh
+cd firmware
+python tools/usb_smoke.py --serial /dev/ttyACM0
+```
+
+The tool needs `hidapi` and `pyserial` in a Python environment; the guide shows
+setup and the corresponding macOS/Windows serial port names.
+
+## CTAP protocol modules
+
+[`firmware/src/ctap`](firmware/src/ctap/README.md) contains the initial CTAP 2.3
+module layer for an ES256 authenticator with discoverable credentials and
+ClientPIN protocol 2. It provides typed command/backend interfaces, status codes,
+credential-management inputs, and mandatory extension helpers for `credProtect`
+and `hmac-secret`. The existing `crypto::ctap` module supplies cryptographic
+primitives. USB transport is wired; CBOR and storage-backed command algorithms are still needed;
+this is not yet an operational or conformant CTAP authenticator. Target profile
+constants must not be advertised as completed capabilities.
+
+## OTP keys
+
+[`firmware/src/otp.rs`](firmware/src/otp.rs) manages the device master key and
+secure-boot public-key hash using typed, write-once access. Hardware OTP is the
+default; irreversible programming requires `otp-provisioning`. Master-key reads
+require the dedicated page to be sealed against writes, Non-secure reads, and
+bootloader access. Secure-boot activation and device-wide lockdown remain a
+separate provisioning step; the private boot signing key stays off-device.
+
+For development, `insecure-test-otp` uses the storage module instead of hardware
+OTP. This intentionally stores test keys in plaintext flash and emits a build
+warning. It cannot be combined with `otp-provisioning`.
+
+See the [OTP guide](firmware/src/otp/README.md) for the fixed row layout, API,
+flash-backed test commands, and guarded-read/provisioning requirements. The
+[initialization guide](firmware/src/init/README.md) documents physical confirmation,
+durable setup and resume. Boot/startup inspection never automatically burns OTP.
+
+## Cryptography
+
+The reusable `no_std` crypto library lives in `firmware/src/crypto/` and is
+available to firmware modules as `crate::crypto`. It provides ES256 signing,
+CTAP PIN/UV protocols 1/2, authenticated encryption for stored secrets, and a
+PSK-authenticated Noise record layer for serial transfers. Its RP2350 entropy
+adapter uses Embassy's hardware TRNG with health checks enabled and no insecure
+fallback seed. Explicit initialization uses it to generate root/credential keys
+and fresh encryption nonces; startup loading preserves existing keys.
+
+See the [crypto module guide](firmware/src/crypto/README.md) for library research,
+usage, wire formats, tests, and the remaining pairing, provisioning, and authorization
+requirements. Raw `Storage::store` calls still store exactly the bytes supplied;
+use the encryption API explicitly for secrets.
 
 ## Nuxt with npm
 
@@ -288,6 +530,7 @@ shown by `lsusb`:
 ```udev
 # /etc/udev/rules.d/70-rp2350-fido-dev.rules
 SUBSYSTEM=="usb", ATTR{idVendor}=="vvvv", ATTR{idProduct}=="pppp", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="vvvv", ATTRS{idProduct}=="pppp", MODE="0660", TAG+="uaccess"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="vvvv", ATTRS{idProduct}=="pppp", MODE="0660", TAG+="uaccess"
 ```
 

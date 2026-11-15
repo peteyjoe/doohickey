@@ -1,0 +1,32 @@
+[package]
+name = "doohickey-crypto"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "mod.rs"
+
+[dependencies]
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "ecdh"] }
+sha2 = { version = "0.10.9", default-features = false }
+hmac = { version = "0.12.1", default-features = false }
+hkdf = { version = "0.12.4", default-features = false }
+aes = { version = "0.8.4", default-features = false, features = ["zeroize"] }
+cbc = { version = "0.1.2", default-features = false, features = ["block-padding", "zeroize"] }
+chacha20poly1305 = { version = "0.10.1", default-features = false }
+rand_core = { version = "0.6.4", default-features = false }
+rand_chacha = { version = "0.3.1", default-features = false }
+zeroize = { version = "1.8", default-features = false }
+subtle = { version = "2.6", default-features = false }
+noise-protocol = { version = "0.2.1", default-features = false }
+noise-rust-crypto = { version = "0.6.2", default-features = false, features = ["use-chacha20poly1305", "use-sha2"] }
+x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+embassy-rp = { version = "0.10.0", default-features = false }
+embassy-time = { version = "0.5.1", default-features = false }
+
+[dev-dependencies]
+hex-literal = "0.4"
+snow = { version = "0.10", default-features = false, features = ["use-chacha20poly1305", "use-sha2", "use-curve25519", "use-getrandom"] }
