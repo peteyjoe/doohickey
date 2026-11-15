@@ -3,7 +3,7 @@
     <h2>Team</h2>
     <div class="members">
       <div v-for="m in members" :key="m.name" class="card">
-        <h3>{{ m    .name }}</h3>
+        <h3>{{ m.name }}</h3>
         <p>{{ m.role }}</p>
       </div>
     </div>
@@ -15,7 +15,7 @@
 const members = [
   { name: 'Bryan Ramirez', role: 'Front end' },
   { name: 'Peter Forbes', role: 'Back end' },
-  { name: 'Joshua Klepinger', role: 'Full stack' }
+  { name: 'Joshua Klepinger', role: 'Full stack' },
   { name: 'Isreal Estrada', role: 'System Designer' } 
 ]
 </script>
