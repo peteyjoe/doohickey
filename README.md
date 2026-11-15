@@ -216,6 +216,14 @@ For serial logs on Linux/WSL, use `tio /dev/ttyACM0`; on macOS, use
 `tio /dev/cu.usbmodem1234` (adjust the device and baud rate as needed).
 Close the terminal before opening the same port through Web Serial.
 
+To flash firmware to a uf2 file, enter:
+```sh
+picotool uf2 convert \
+  target/thumbv8m.main-none-eabihf/release/firmware -t elf \
+  firmware.uf2 \
+  --family rp2350-arm-s
+```
+
 ## Nuxt with npm
 
 Create the web app once, selecting npm if prompted:
