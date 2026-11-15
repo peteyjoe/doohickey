@@ -149,6 +149,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cobs"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd93fd2c1b27acd030440c9dbd9d14c1122aad622374fe05a670b67a4bc034be"
+dependencies = [
+ "heapless 0.9.3",
+ "thiserror",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -687,6 +697,7 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 name = "firmware"
 version = "0.1.0"
 dependencies = [
+ "cobs",
  "cortex-m",
  "cortex-m-rt",
  "defmt",

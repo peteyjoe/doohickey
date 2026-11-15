@@ -15,6 +15,7 @@ defmt-rtt = "1.0.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 embassy-usb = "0.6.0"
 embassy-futures = "0.1.2"
+cobs = { version = "0.5.1", default-features = false }
 
 [profile.dev]
 opt-level = 1

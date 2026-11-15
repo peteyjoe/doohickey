@@ -12,11 +12,20 @@ use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config};
 use panic_probe as _;
 
+mod framing; // pulls in src/cobs.rs
+mod protocol;
+
+use framing::{FrameReader, Push};
+
+const MAX_PAYLOAD: usize = 512;
+// +1 for the delimiter we now append ourselves
+const MAX_ENCODED: usize = cobs::max_encoding_length(MAX_PAYLOAD) + 1;
+
 #[unsafe(link_section = ".bi_entries")]
 #[used]
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
-    embassy_rp::binary_info::rp_program_name!(c"cdc echo"),
-    embassy_rp::binary_info::rp_program_description!(c"USB CDC-ACM echo"),
+    embassy_rp::binary_info::rp_program_name!(c"cdc cobs"),
+    embassy_rp::binary_info::rp_program_description!(c"USB CDC-ACM cobs test"),
     embassy_rp::binary_info::rp_cargo_version!(),
     embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
@@ -102,15 +111,54 @@ impl From<EndpointError> for Disconnected {
     }
 }
 
-// `'d` is a lifetime: it ties the class to the driver/buffers it borrows from.
 async fn echo<'d>(class: &mut CdcAcmClass<'d, Driver<'d, USB>>) -> Result<(), Disconnected> {
-    let mut buf = [0u8; 64];
+    let mut packet = [0u8; 64];
+    let mut reader = FrameReader::<MAX_ENCODED>::new();
+    let mut decoded = [0u8; MAX_PAYLOAD];
+    let mut tx = [0u8; MAX_ENCODED];
+    let mut resp = [0u8; MAX_PAYLOAD];
+
     loop {
-        // `?` = "if this returned Err, return that Err from this function now
-        // otherwise unwrap the Ok value".
-        let n = class.read_packet(&mut buf).await?;
-        let data = &buf[..n]; // slice: a view of the first n bytes, no copy
-        class.write_packet(data).await?;
-        class.write_packet(data).await?;
+        let n = class.read_packet(&mut packet).await?;
+
+        // A message can be split across packets, or several can share one,
+        // so feed bytes one at a time and let the reader find the boundaries.
+        for &b in &packet[..n] {
+            match reader.push(b) {
+                Push::Pending => {}
+                Push::Overflow => send_frame(class, b"ERR overflow", &mut tx).await?,
+                Push::Frame(frame) => match cobs::decode(frame, &mut decoded) {
+                    Ok(report) => {
+                        let len = report.frame_size();
+                        let n = protocol::handle(&decoded[..len], &mut resp);
+                        send_frame(class, &resp[..n], &mut tx).await?
+                    }
+                    Err(_) => send_frame(class, b"ERR bad frame", &mut tx).await?,
+                },
+            }
+        }
     }
+}
+
+/// COBS-encode `payload` into the scratch buffer `tx` and send it.
+async fn send_frame<'d>(
+    class: &mut CdcAcmClass<'d, Driver<'d, USB>>,
+    payload: &[u8],
+    tx: &mut [u8],
+) -> Result<(), Disconnected> {
+    let Ok(n) = cobs::try_encode(payload, tx) else {
+        return Ok(()); // payload too big for tx
+    };
+    tx[n] = 0; // append the delimiter ourselves
+    let n = n + 1;
+    // USB bulk packets max out at 64 bytes, so send in chunks.
+    for chunk in tx[..n].chunks(64) {
+        class.write_packet(chunk).await?;
+    }
+    // If the data ended exactly on a 64-byte boundary, send an empty packet
+    // so the host knows the transfer is over.
+    if n % 64 == 0 {
+        class.write_packet(&[]).await?;
+    }
+    Ok(())
 }
