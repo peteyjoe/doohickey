@@ -1,17 +1,11 @@
-<script setup lang="ts">
-import SiteHeader from '~/components/SiteHeader.vue'
-
-
-</script>
-
 <template>
-  <UApp>  <!-- required wrapper for Nuxt UI -->
+  <UApp>
     <NuxtRouteAnnouncer />
-    <SiteHeader />
+    <!-- SiteHeader removed: the hero has its own top bar now -->
     <HeroSection />
     <HowItWorks />
+    <DemoSection />
     <FlashSection />
     <TeamSection />
-    <DemoSection />
   </UApp>
 </template>

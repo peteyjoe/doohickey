@@ -1,14 +1,28 @@
-@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=IBM+Plex+Sans:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap');
 @import "tailwindcss";
 @import "@nuxt/ui";
 
+/* shared colors, every section uses these */
 :root {
-  --silk: #F2F4EE;  /* page background */
-  --mask: #0D5C46;  /* solder-mask green, main brand color */
-  --gold: #E3B341;  /* gold pads, accent */
-  --ink: #12201A;   /* text */
-  --mist: #D5E4DC;  /* panels and borders */
+  --left: #1d2029;       /* darker panel */
+  --right: #252935;      /* lighter panel */
+  --ghost: #1b1e26;      /* giant background word */
+  --plate: #2a2e39;      /* raised blocks */
+  --plate-dark: #181a21; /* sunken blocks */
+  --cream: #f3dfc7;      /* main text */
+  --muted: #8d94a5;      /* secondary text */
+  --orange: #f0642c;     /* accent */
 }
 
-body { margin: 0; background: var(--silk); color: var(--ink); font-family: 'IBM Plex Sans', system-ui, sans-serif; line-height: 1.6; }
-h1, h2, h3 { font-family: 'Chakra Petch', system-ui, sans-serif; line-height: 1.1; }
+html { background: var(--left); }
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; } /* nav links glide instead of jumping */
+}
+body {
+  margin: 0;
+  background: var(--left);
+  color: var(--cream);
+  font-family: 'Outfit', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  line-height: 1.5;
+}
+h1, h2, h3 { font-family: inherit; font-weight: 600; }

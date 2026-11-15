@@ -11,7 +11,7 @@
       <button class="key" :class="{ ok: verified }" aria-label="Tap the key to simulate a login" @click="tap">
         <span class="usb"></span>
         <span class="board">
-          <span class="name">Le-Key</span>
+          <span class="name">The DoohicKEY</span>
           <span class="pad"></span>
           <span class="led"></span>
         </span>

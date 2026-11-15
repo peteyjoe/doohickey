@@ -1,20 +1,21 @@
 <template>
-  <section id="demo" class="demo">  <!-- matches the header link to="#demo" -->
-    <h2>Demo</h2>
-    <p>See the key in action.</p>
-    <!-- placeholder box, swap for a <video> or screenshot once the team has one -->
-    <div class="placeholder">Demo video coming soon</div>
+  <section id="demo" class="demo">
+    <div class="inner">
+      <h2>Demo</h2>
+      <p class="lead">See the key in action.</p>
+      <!-- the file lives in public/video/demo.mp4, so the URL is /video/demo.mp4 -->
+      <video class="player" src="/video/demo.mp4" controls playsinline preload="metadata"></video>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.demo { padding: 4rem 1rem; text-align: center; scroll-margin-top: 80px; }
-.placeholder {
-  max-width: 640px;
-  margin: 2rem auto 0;
-  padding: 6rem 1rem;
-  border: 2px dashed #334155;  /* dashed border so it reads as "empty slot" */
-  border-radius: 12px;
-  color: #334155;
-}
+.demo { padding: 7rem 0; background: var(--left); color: var(--cream); }
+.inner { max-width: 1100px; margin: 0 auto; padding: 0 2rem; }
+h2 { margin: 0 0 1rem; font-size: clamp(2rem, 4vw, 3rem); line-height: 1.1; color: var(--cream); }
+.lead { margin: 0 0 2.5rem; color: var(--muted); }
+/* max-height keeps a tall phone video from taking over the whole page */
+.player { display: block; width: 100%; max-height: 75vh; background: var(--plate-dark); object-fit: contain; }
+
+@media (max-width: 800px) { .demo { padding: 4rem 0; } }
 </style>

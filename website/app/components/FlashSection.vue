@@ -1,17 +1,20 @@
 <template>
   <section id="flash" class="flash">
-    <h2>Flash your key</h2>
-    <p>Hold BOOTSEL, plug in the board, Connect, pick your .uf2, then Flash. Chrome or Edge only.</p>
-    <div class="row">
-      <UButton label="Connect" @click="connect" />
-      <input type="file" accept=".uf2" @change="onFile" />
-      <UButton label="Flash" :disabled="!ready" @click="flash" />
+    <div class="inner">
+      <h2>Flash your key</h2>
+      <p class="lead">Hold BOOTSEL, plug in the board, Connect, pick your .uf2, then Flash. Chrome or Edge only.</p>
+      <div class="panel">
+        <UButton label="Connect" @click="connect" />
+        <input class="file" type="file" accept=".uf2" @change="onFile" />
+        <UButton label="Flash" :disabled="!ready" @click="flash" />
+      </div>
+      <p class="status" aria-live="polite">{{ status }}</p>
     </div>
-    <p v-if="status">{{ status }}</p>
   </section>
 </template>
 
 <script setup>
+// same flasher logic as before, only the look changed
 const status = ref('')
 // shallowRef because Vue's deep proxy can break native browser objects like USBDevice
 const device = shallowRef(null)
@@ -54,6 +57,16 @@ async function flash() {
 </script>
 
 <style scoped>
-.flash { padding: 4rem 1rem; text-align: center; scroll-margin-top: 80px; }
-.row { display: flex; gap: 1rem; justify-content: center; align-items: center; flex-wrap: wrap; margin: 1.5rem 0; }
+.flash { padding: 7rem 0; background: var(--right); color: var(--cream); }
+.inner { max-width: 1100px; margin: 0 auto; padding: 0 2rem; }
+h2 { margin: 0 0 1rem; font-size: clamp(2rem, 4vw, 3rem); line-height: 1.1; color: var(--cream); }
+.lead { margin: 0 0 2.5rem; max-width: 60ch; color: var(--muted); }
+.panel { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.5rem; padding: 1.75rem 2rem; background: var(--plate-dark); }
+.file { font: inherit; font-size: 0.9rem; color: var(--muted); }
+/* styles the "Choose File" button */
+.file::file-selector-button { margin-right: 1rem; padding: 0.5rem 1rem; border: 1.5px solid var(--orange); border-radius: 6px; background: transparent; color: var(--cream); font: inherit; font-size: 0.9rem; cursor: pointer; }
+.file::file-selector-button:hover { background: var(--orange); color: var(--left); }
+.status { min-height: 1.6em; margin: 1.25rem 0 0; color: var(--cream); }
+
+@media (max-width: 800px) { .flash { padding: 4rem 0; } .panel { padding: 1.25rem; } }
 </style>
