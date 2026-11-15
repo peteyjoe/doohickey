@@ -51,6 +51,7 @@ struct Mock {
     read_error: Option<Error>,
     fail_reads_at: Option<usize>,
     now: u64,
+    flash_size: u32,
 }
 impl Default for Mock {
     fn default() -> Self {
@@ -69,6 +70,7 @@ impl Default for Mock {
             read_error: None,
             fail_reads_at: None,
             now: 3080,
+            flash_size: 4 * 1024 * 1024,
         }
     }
 }
@@ -90,6 +92,35 @@ impl Mock {
     }
 }
 impl Backend for Mock {
+    fn geometry(&self) -> init::lifecycle::Geometry {
+        init::lifecycle::Geometry {
+            storage_start: 0x300000,
+            flash_size: self.flash_size,
+        }
+    }
+    fn firmware_version(&self) -> &str {
+        self.running
+    }
+    async fn clear_application(&mut self) -> Result<(), Error> {
+        self.before()?;
+        self.records.retain(|k, _| {
+            (0xffff_fe00..=0xffff_fe04).contains(k) || (0xffff_ff00..=0xffff_ff02).contains(k)
+        });
+        self.after()
+    }
+    async fn remove(&mut self, key: u32) -> Result<(), Error> {
+        self.before()?;
+        self.records.remove(&key);
+        self.after()
+    }
+    async fn update_metadata_version(&mut self) -> Result<(), Error> {
+        if self.version == Some(self.running) {
+            return Ok(());
+        }
+        self.before()?;
+        self.version = Some(self.running);
+        self.after()
+    }
     fn now_ms(&self) -> u64 {
         self.now
     }
@@ -106,10 +137,12 @@ impl Backend for Mock {
         match self.version {
             None if self.records.is_empty() => Ok(Partition::Erased),
             None => Err(Error::MissingMetadata),
-            Some(version) if init::storage_version_supported(version, self.running) => {
-                Ok(Partition::Compatible)
-            }
-            _ => Ok(Partition::DifferentVersion),
+            Some(version) => Ok(match init::lifecycle::upgrade(version, self.running) {
+                init::lifecycle::Upgrade::Current => Partition::Compatible,
+                init::lifecycle::Upgrade::Migrate => Partition::Migrate,
+                init::lifecycle::Upgrade::DowngradeBlocked => Partition::DowngradeBlocked,
+                init::lifecycle::Upgrade::Unsupported => Partition::DifferentVersion,
+            }),
         }
     }
     async fn initialize_metadata(&mut self) -> Result<(), Error> {
@@ -124,7 +157,7 @@ impl Backend for Mock {
         Ok(self
             .records
             .keys()
-            .all(|k| matches!(*k, JOURNAL_KEY | STATE_KEY | COMPLETION_KEY)))
+            .all(|k| (0xffff_fe00..=0xffff_fe04).contains(k)))
     }
     async fn read(&mut self, key: u32, output: &mut [u8]) -> Result<Option<usize>, Error> {
         if self.fail_reads_at == Some(self.writes) {
@@ -143,7 +176,7 @@ impl Backend for Mock {
         Ok(Some(value.len()))
     }
     async fn store(&mut self, key: u32, value: &[u8]) -> Result<(), Error> {
-        assert!(matches!(key, JOURNAL_KEY | STATE_KEY | COMPLETION_KEY));
+        assert!((0xffff_fe00..=0xffff_fe04).contains(&key));
         self.before()?;
         self.records.insert(key, value.to_vec());
         self.after()
@@ -244,11 +277,11 @@ fn reboot_and_compatible_firmware_update_preserve_keys_settings_and_encrypted_ma
         .unwrap();
     let mut b = c.into_backend();
     let root = b.root;
-    let version = b.version;
     let writes = b.writes;
-    b.running = "0.1.1"; // simulated compatible successor, keeping explicit 0.1.0 support
+    b.running = "0.2.0";
     let mut c = Coordinator::new(b);
-    assert_eq!(ready(c.inspect()).state, State::Ready);
+    assert_eq!(ready(c.inspect()).state, State::MigrationRequired);
+    ready(c.upgrade(&mut rng(6))).unwrap();
     assert_eq!(
         c.initialized()
             .unwrap()
@@ -264,8 +297,8 @@ fn reboot_and_compatible_firmware_update_preserve_keys_settings_and_encrypted_ma
     assert_eq!(&output[..len], b"same stored credential");
     let b = c.into_backend();
     assert_eq!(b.root, root);
-    assert_eq!(b.version, version);
-    assert_eq!(b.writes, writes);
+    assert_eq!(b.version, Some("0.2.0"));
+    assert!(b.writes > writes);
 }
 
 #[test]
@@ -522,7 +555,7 @@ fn newer_unknown_metadata_is_preserved_and_no_migration_is_invented() {
     b.version = Some("999.0.0");
     let writes = b.writes;
     let mut c = Coordinator::new(b);
-    assert_eq!(ready(c.inspect()).state, State::MigrationRequired);
+    assert_eq!(ready(c.inspect()).reason, Reason::DowngradeBlocked);
     assert!(ready(c.initialize(confirmation(), &mut rng(5))).is_err());
     let b = c.into_backend();
     assert_eq!(b.writes, writes);
@@ -696,4 +729,134 @@ fn presence_requires_fresh_continuous_hold_release_and_is_single_use() {
     let mut g = PresenceGate::new(100);
     assert!(g.observe(false, 90).is_none());
     assert!(g.observe(false, 120).is_none());
+}
+
+#[test]
+fn reset_rotates_only_credential_key_and_preserves_trust_records() {
+    let c = initialized();
+    let old_key = *c
+        .initialized()
+        .unwrap()
+        .credential_key()
+        .provisioning_bytes();
+    let mut b = c.into_backend();
+    b.records.insert(0x01000001, b"credential".to_vec());
+    b.records.insert(0x02000000, b"PIN".to_vec());
+    b.records.insert(0xffff_ff01, b"boot trust key".to_vec());
+    let root = b.root;
+    let mut c = Coordinator::new(b);
+    ready(c.inspect());
+    ready(c.reset(confirmation(), &mut rng(81))).unwrap();
+    assert_ne!(
+        c.initialized()
+            .unwrap()
+            .credential_key()
+            .provisioning_bytes(),
+        &old_key
+    );
+    let b = c.into_backend();
+    assert_eq!(b.root, root);
+    assert_eq!(b.root_writes, 1);
+    assert_eq!(b.records.get(&0xffff_ff01).unwrap(), b"boot trust key");
+    assert!(!b.records.contains_key(&0x01000001));
+    assert!(!b.records.contains_key(&0x02000000));
+    assert!(!b.records.contains_key(&init::lifecycle::TRANSACTION_KEY));
+}
+
+#[test]
+fn reset_and_upgrade_resume_each_interrupted_write_forward() {
+    for reset in [false, true] {
+        for fail_after in [false, true] {
+            for cut in 0..9 {
+                let c = initialized();
+                let old_key = *c
+                    .initialized()
+                    .unwrap()
+                    .credential_key()
+                    .provisioning_bytes();
+                let mut b = c.into_backend();
+                b.records.insert(0x01000001, b"credential marker".to_vec());
+                let root = b.root;
+                b.running = "0.2.0";
+                b.fail_at = Some(b.writes + cut);
+                b.fail_after = fail_after;
+                let mut c = Coordinator::new(b);
+                ready(c.inspect());
+                if reset {
+                    let _ = ready(c.reset(confirmation(), &mut rng(82)));
+                } else {
+                    let _ = ready(c.upgrade(&mut rng(82)));
+                }
+                let mut b = c.into_backend();
+                b.fail_at = None;
+                let pending = b.records.contains_key(&init::lifecycle::TRANSACTION_KEY);
+                let mut c = Coordinator::new(b);
+                let report = ready(c.inspect());
+                if pending {
+                    assert!(
+                        matches!(
+                            report.reason,
+                            Reason::ResetInterrupted | Reason::UpgradeInterrupted
+                        ),
+                        "{reset}/{fail_after}/{cut}: {report:?}"
+                    );
+                    assert!(c.application_parts().is_none());
+                    ready(c.resume_transition(&mut rng(83))).unwrap();
+                } else if report.state != State::Ready {
+                    if reset {
+                        ready(c.reset(confirmation(), &mut rng(83))).unwrap();
+                    } else {
+                        ready(c.upgrade(&mut rng(83))).unwrap();
+                    }
+                }
+                assert_eq!(c.report().state, State::Ready);
+                let key = c
+                    .initialized()
+                    .unwrap()
+                    .credential_key()
+                    .provisioning_bytes();
+                if reset {
+                    assert_ne!(key, &old_key);
+                } else {
+                    assert_eq!(key, &old_key);
+                }
+                let b = c.into_backend();
+                assert_eq!(b.root, root);
+                assert_eq!(b.root_writes, 1);
+                assert_eq!(b.records.contains_key(&0x01000001), !reset);
+            }
+        }
+    }
+}
+
+#[test]
+fn version_geometry_and_confirmation_checks_fail_closed() {
+    use init::lifecycle::{Upgrade, upgrade};
+    assert_eq!(upgrade("0.1.0", "0.2.0"), Upgrade::Migrate);
+    assert_eq!(upgrade("0.2.0", "0.1.0"), Upgrade::DowngradeBlocked);
+    for value in ["0.1.1", "01.0.0", "0.2.0-alpha", "garbage"] {
+        assert_eq!(upgrade(value, "0.2.0"), Upgrade::Unsupported);
+    }
+    let c = initialized();
+    // The backend clock is deliberately earlier than the confirmation.
+    let mut b = c.into_backend();
+    let writes = b.writes;
+    b.now = 1;
+    let mut c = Coordinator::new(b);
+    assert_eq!(
+        ready(c.reset(confirmation(), &mut rng(84))),
+        Err(Error::ConfirmationExpired)
+    );
+    assert_eq!(c.into_backend().writes, writes);
+    let mut b = initialized().into_backend();
+    b.running = "0.2.0";
+    let mut c = Coordinator::new(b);
+    ready(c.upgrade(&mut rng(85))).unwrap();
+    let mut b = c.into_backend();
+    let writes = b.writes;
+    b.flash_size = 16 * 1024 * 1024;
+    let mut c = Coordinator::new(b);
+    assert_eq!(ready(c.inspect()).reason, Reason::GeometryMismatch);
+    assert!(ready(c.reset(confirmation(), &mut rng(86))).is_err());
+    assert_eq!(c.into_backend().writes, writes);
 }

@@ -37,8 +37,8 @@ pub const MAX_VALUE_SIZE: usize = 1024;
 pub const METADATA_KEY: u32 = 0;
 /// Reserved for flash-backed OTP tests in every build, preventing collisions.
 pub(crate) const OTP_TEST_KEYS: core::ops::RangeInclusive<u32> = 0xffff_ff00..=0xffff_ff02;
-/// Coordinator-owned journal, authenticated state and final completion.
-pub(crate) const INITIALIZATION_KEYS: core::ops::RangeInclusive<u32> = 0xffff_fe00..=0xffff_fe02;
+/// Coordinator-owned initialization, lifecycle watermark and transaction.
+pub(crate) const INITIALIZATION_KEYS: core::ops::RangeInclusive<u32> = 0xffff_fe00..=0xffff_fe04;
 
 const _: () = assert!(metadata::CURRENT_RECORD.len() <= MAX_VALUE_SIZE);
 
@@ -92,6 +92,35 @@ pub struct Storage<'d> {
 }
 
 impl<'d> Storage<'d> {
+    /// Idempotent reset cleanup. Keep metadata, coordinator transaction and
+    /// flash-emulated trust keys. Never erase the partition or hardware OTP.
+    pub(crate) async fn clear_application(&mut self) -> Result<(), Error> {
+        loop {
+            let mut items = self.map.fetch_all_items(&mut self.buffer).await?;
+            let mut selected = None;
+            while let Some((key, _)) = items.next::<&[u8]>(&mut self.buffer).await? {
+                if key != METADATA_KEY
+                    && !INITIALIZATION_KEYS.contains(&key)
+                    && !OTP_TEST_KEYS.contains(&key)
+                {
+                    selected = Some(key);
+                    break;
+                }
+            }
+            let Some(key) = selected else { break };
+            self.map.remove_item(&mut self.buffer, &key).await?;
+        }
+        self.buffer.fill(0);
+        Ok(())
+    }
+    pub(crate) async fn remove_initialization(&mut self, key: u32) -> Result<(), Error> {
+        if !INITIALIZATION_KEYS.contains(&key) {
+            return Err(Error::ReservedKey);
+        }
+        self.map.remove_item(&mut self.buffer, &key).await?;
+        self.buffer.fill(0);
+        Ok(())
+    }
     /// Take ownership of flash and DMA channel 0. No reads, writes, or erases
     /// happen until a method is awaited. The first store can use erased flash
     /// without a separate format step.

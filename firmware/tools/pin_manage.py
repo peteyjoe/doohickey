@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Manage a physical DOOHICKEY PIN using python-fido2. PINs are prompted privately.
-Setting/changing the PIN writes device state. status is read-only.
+Setting/changing the PIN writes device state. reset deletes application data
+after on-device physical confirmation. status is read-only.
 """
 import argparse
 from getpass import getpass
@@ -11,7 +12,7 @@ from fido2.ctap2.pin import ClientPin
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["status", "set", "change"])
+    parser.add_argument("operation", choices=["status", "set", "change", "reset"])
     args = parser.parse_args()
     devices = list(CtapHidDevice.list_devices())
     try:
@@ -19,6 +20,12 @@ def main():
         if len(matches) != 1:
             raise RuntimeError("Connect exactly one DOOHICKEY native USB device")
         ctap = Ctap2(matches[0])
+        if args.operation == "reset":
+            print("Factory reset deletes all credentials and PIN. Request within 10 seconds of power-on.", flush=True)
+            print("Release GPIO 23, hold for three seconds, then release to confirm.", flush=True)
+            ctap.reset()
+            print("Reset completed; OTP trust keys are retained and PIN is unset.")
+            return
         helper = ClientPin(ctap)
         if args.operation == "status":
             retries, temporary = helper.get_pin_retries()

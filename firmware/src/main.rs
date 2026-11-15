@@ -9,6 +9,10 @@ pub mod storage;
 pub mod usb;
 pub use doohickey_crypto as crypto;
 
+#[used]
+static UPDATE_DESCRIPTOR: [u8; 64] =
+    *include_bytes!(concat!(env!("OUT_DIR"), "/update_descriptor.bin"));
+
 use core::cell::Cell;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
@@ -30,6 +34,7 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
     entry = "cortex_m_rt::entry"
 )]
 async fn main(_spawner: Spawner) {
+    core::hint::black_box(&UPDATE_DESCRIPTOR);
     let peripherals = embassy_rp::init(Default::default());
     let button = Input::new(peripherals.PIN_23, Pull::Up);
     let led = Output::new(peripherals.PIN_25, Level::Low);

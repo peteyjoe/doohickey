@@ -63,8 +63,9 @@ directory fails closed; a valid but retired ID returns no match.
 There is no rollback protection or secure erasure. Restoring an old valid
 directory can restore old accounts. Do not downgrade to firmware unaware of the
 resident format. Credential management and extension integration are now implemented; see
-[management and extensions](credential-management-and-extensions.md). Reset and
-physical qualification remain separate work.
+[management and extensions](credential-management-and-extensions.md).
+[Reset and upgrade lifecycle](reset-and-upgrades.md) are implemented; physical
+qualification remains separate work.
 
 ## Focused development checks
 

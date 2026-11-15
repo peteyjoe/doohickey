@@ -5,6 +5,7 @@ pub enum State {
     SetupRequired,
     InitializationRequired,
     Initializing,
+    ResetRequired,
     Ready,
     MigrationRequired,
     RecoveryRequired,
@@ -16,6 +17,7 @@ impl State {
             Self::SetupRequired => "setup_required",
             Self::InitializationRequired => "initialization_required",
             Self::Initializing => "initializing",
+            Self::ResetRequired => "reset_required",
             Self::Ready => "ready",
             Self::MigrationRequired => "migration_required",
             Self::RecoveryRequired => "recovery_required",
@@ -41,6 +43,11 @@ pub enum Reason {
     ApplicationDataPresent,
     ProvisioningDisabled,
     EntropyUnavailable,
+    ResetInterrupted,
+    UpgradeInterrupted,
+    DowngradeBlocked,
+    UnsupportedVersion,
+    GeometryMismatch,
 }
 impl Reason {
     pub const fn as_str(self) -> &'static str {
@@ -62,6 +69,11 @@ impl Reason {
             Self::ApplicationDataPresent => "application_data_present",
             Self::ProvisioningDisabled => "provisioning_disabled",
             Self::EntropyUnavailable => "entropy_unavailable",
+            Self::ResetInterrupted => "reset_interrupted",
+            Self::UpgradeInterrupted => "upgrade_interrupted",
+            Self::DowngradeBlocked => "downgrade_blocked",
+            Self::UnsupportedVersion => "unsupported_version",
+            Self::GeometryMismatch => "geometry_mismatch",
         }
     }
 }

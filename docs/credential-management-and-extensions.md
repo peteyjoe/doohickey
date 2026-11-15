@@ -94,8 +94,9 @@ secrets. Continuations own bounded copies of the original extension input and
 apply it to each selected credential's own seeds.
 
 Only these two extensions are advertised. hmac-secret-mc, credBlob, large blobs
-and built-in UV remain unsupported. Reset, secure update/downgrade policy,
-serial backup authorization and complete CTAP 2.3 qualification remain separate.
+and built-in UV remain unsupported. [Reset, recovery and upgrade policy](reset-and-upgrades.md)
+are implemented. Secure boot, serial backup authorization and complete CTAP 2.3
+qualification remain separate.
 
 ## Focused checks
 

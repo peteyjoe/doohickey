@@ -49,6 +49,17 @@ fn main() {
         ),
     )
     .expect("failed to generate flash_layout.rs");
+    // Embedded in the loadable image so update tooling checks the actual ELF,
+    // rather than trusting a filename or a separately supplied version.
+    let version = env::var("CARGO_PKG_VERSION").expect("package version");
+    assert!(version.len() <= 32);
+    let mut descriptor = [0u8; 64];
+    descriptor[..8].copy_from_slice(b"DOOHUPD1");
+    descriptor[8..8 + version.len()].copy_from_slice(version.as_bytes());
+    descriptor[40..44].copy_from_slice(&(flash_size as u32).to_le_bytes());
+    descriptor[44..48].copy_from_slice(&(storage_start as u32).to_le_bytes());
+    descriptor[48] = u8::from(test_otp) | (u8::from(provision_otp) << 1);
+    fs::write(out_dir.join("update_descriptor.bin"), descriptor).expect("write update descriptor");
     println!("cargo:rustc-link-search={}", out_dir.display());
     println!("cargo:rerun-if-changed=memory.x.in");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FLASH_16MB");

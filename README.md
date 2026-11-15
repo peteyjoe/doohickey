@@ -386,7 +386,7 @@ selected backend/build permits it. Metadata reads retain the storage library's
 existing interrupted-write repair behavior. Application read/store calls also
 reserve coordinator keys `0xFFFFFE00..=0xFFFFFE02`.
 
-Records survive reset, but a full-chip erase during flashing removes them.
+Records survive reboot and firmware-only updates. An explicit factory reset removes application data while preserving OTP; a full-chip erase also removes storage.
 The raw store has wear leveling and CRC checks; use `EncryptedStorage` to
 encrypt secrets. Neither layer provides transactions spanning multiple keys,
 rollback protection, or secure deletion. Old values, including legacy plaintext,
@@ -402,7 +402,7 @@ public `authenticatorGetInfo` response are connected. The development FIDO_2_0
 profile supports ES256 registration, packed self-attestation, discoverable
 accounts and allow-list assertions with fresh GPIO 23 confirmation (GPIO 25 flashes).
 Protocol-2 ClientPIN, PIN-based UV and [discoverable credentials](docs/discoverable-credentials.md)
-are implemented, along with [PIN-authorized management and credential extensions](docs/credential-management-and-extensions.md). See [PIN setup and tests](docs/client-pin.md). See the
+are implemented, along with [PIN-authorized management and credential extensions](docs/credential-management-and-extensions.md) and [reset/recovery and firmware upgrades](docs/reset-and-upgrades.md). See [PIN setup and tests](docs/client-pin.md). See the
 [credential milestone guide](docs/credential-milestone.md) for encrypted storage
 and the register/update/authenticate test.
 

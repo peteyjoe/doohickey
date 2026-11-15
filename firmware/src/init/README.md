@@ -1,10 +1,9 @@
 # Durable initialization
 
-The coordinator implements first setup, validated resume, and startup loading.
+The coordinator implements first setup, validated resume, startup loading, and durable reset/upgrades. See the [reset and upgrade guide](../../../docs/reset-and-upgrades.md).
 It owns persistent state; after hardware setup, `main` inspects it, then runs
 USB alongside the local button/setup loop. USB diagnostics remain available while
-waiting for confirmation. Secure-boot activation, CTAP algorithms and factory
-reset remain separate stages in the [alpha roadmap](../../../docs/alpha-roadmap.md).
+waiting for confirmation. Secure-boot activation and full physical qualification remain separate stages in the [alpha roadmap](../../../docs/alpha-roadmap.md).
 
 ## Try the flash-only test backend
 
@@ -48,17 +47,19 @@ secure-boot key hash, key-valid flags, secure-boot enable, or debug/boot policy.
 
 ## Persistent records
 
-Normal application Storage read/store calls reject all three coordinator keys.
+Normal application Storage read/store calls reject the entire `0xFFFFFE00..0xFFFFFE04` coordinator range.
 
 | Key | Encoding | Purpose |
 | --- | --- | --- |
 | `0xFFFFFE00` | 57 bytes: `DOOHSET1`, root mode, random 16-byte setup ID, SHA-256 checksum | Setup journal written/read back before root programming |
 | `0xFFFFFE01` | 141-byte XChaCha20-Poly1305 envelope, containing 100 authenticated plaintext bytes | Settings and random credential key stored together; includes setup ID/journal digest |
 | `0xFFFFFE02` | 113-byte encrypted/authenticated envelope containing 72 plaintext bytes | Final commit: `DOOHDONE`, journal digest, exact state-envelope digest |
+| `0xFFFFFE03` | Root-encrypted 49-byte plaintext | Firmware version and geometry watermark |
+| `0xFFFFFE04` | Root-encrypted 207-byte plaintext | Resumable reset/upgrade transaction |
 
 The journal is not secret and its checksum is not authentication. It is never
 accepted as authorization. Final state and completion authenticate the journal
-identity under the sealed root. The state also carries fixed `DOOHCFG1` and
+identity under the sealed root. The state also carries `DOOHCFG2` (legacy `DOOHCFG1` is readable) and
 `COMPLETE` encoding markers; those markers alone do not establish readiness.
 
 The state stores `Settings::user_presence_timeout_ms`, default 30,000 and validated
@@ -67,11 +68,10 @@ This setting controls the authenticator's user-presence timeout; the local
 setup confirmation timings above are fixed. There is no default PIN/password or
 claim that the remaining CTAP persistent state has been initialized.
 
-The mutable key is distinct from the permanent OTP root. Future credential
-encryption/wrapping should use `Initialized::credential_key()`, so authenticator
-reset can replace that key without replacing OTP. Reset and mutable settings
-updates are not provided by this setup-only API: changing committed records
-later needs its own consistent update/reset transaction.
+The mutable key is distinct from the permanent OTP root. Credential storage uses
+`Initialized::credential_key()`. `Coordinator::reset` replaces it through an
+authenticated transaction while preserving OTP. Mutable settings APIs remain
+separate; reset restores defaults.
 
 Journal, state and completion have separate fixed encodings/AEAD contexts that
 do not depend on firmware version or flash capacity. Top-level metadata remains
@@ -97,7 +97,8 @@ After consuming a fresh local confirmation and rechecking authoritative state:
 4. If state is absent and there is no surviving completion witness, generate a
    credential key and default settings, encrypt/store them together, then reload
    and verify the key. If valid prepared state already exists, reuse it unchanged.
-5. Write the authenticated completion record **last**, binding the persisted state
+5. Adopt the current release/geometry watermark and metadata, then write the
+   authenticated completion record **last**, binding the persisted state
    and journal. Read back and authenticate all required records.
 6. Retain only validated settings and the zeroizing mutable credential key,
    immediately dropping temporary root/key/plaintext buffers. Report `ready`.
@@ -117,7 +118,8 @@ as proof of either successful setup or a need to regenerate secrets.
 | `initialization_required / setup_interrupted` | Recognized journal/prepared state, no final commit; explicitly resume using any already persisted key |
 | `initializing` | Local attempt is active; current INFO reports this while the setup future yields |
 | `ready` | Sealed root, valid settings/key state and matching authenticated completion have all been verified |
-| `migration_required` | Unsupported stored firmware version; no automatic rewrite, downgrade or migration |
+| `migration_required` | Recognized upgrade transaction or supported `0.1.0` migration resumes automatically; unknown formats remain blocked |
+| `reset_required` | Authenticated interrupted reset; automatically resumes the same replacement key generation |
 | `recovery_required` | Corruption, missing required evidence, unknown application data before completion, inaccessible storage/OTP, or partial/invalid root |
 
 If the state disappears but its completion survives, recovery is mandatory.
@@ -126,8 +128,8 @@ reusing the same key, when no unrelated application records exist. An invalid
 completion/state/journal is not silently replaced. Missing root alongside state
 or completion is never treated as a new device.
 
-Setup/resume scans all returned log items and permits only metadata, the three
-setup keys, and (in emulator builds only) reserved emulated-OTP records. Even an
+Setup/resume scans all returned log items and permits only metadata, the five
+coordinator keys, and (in emulator builds only) reserved emulated-OTP records. Even an
 obsolete unrelated record blocks inference. A completed valid installation can
 of course contain other application records. Missing metadata on non-erased
 flash always blocks; metadata-only valid interrupted setup can resume explicitly.
@@ -141,11 +143,11 @@ protection, or recovery of a partially burned OTP root.
 
 ## Upgrades and application integration
 
-`storage_version_supported(stored, running)` explicitly supports the current
-running version and the implemented `0.1.0` persistent format. A compatible
-successor must retain appropriate supported versions; arbitrary semver patch
-numbers are not assumed compatible. Startup does not rewrite the stored
-version. Unknown/newer formats stay blocked until an explicit migration exists.
+`init::lifecycle::upgrade(stored, running)` names supported release transitions.
+Firmware `0.2.0` migrates authenticated `0.1.0` initialization while preserving
+application secrets and settings. Same-version startup does not write flash.
+Unknown formats, incompatible geometry and downgrades stay blocked. See the
+[release table and firmware-only update procedure](../../../docs/reset-and-upgrades.md).
 
 `Coordinator<B>` runs against a narrow async `Backend`; `DeviceBackend` adapts
 the existing Storage and OTP modules. On hardware, OTP record validation checks

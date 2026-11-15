@@ -35,6 +35,30 @@ fn otp_error(error: otp::Error) -> Error {
     }
 }
 impl Backend for DeviceBackend<'_> {
+    fn geometry(&self) -> super::lifecycle::Geometry {
+        super::lifecycle::Geometry {
+            storage_start: storage::STORAGE_START,
+            flash_size: storage::FLASH_SIZE as u32,
+        }
+    }
+    async fn clear_application(&mut self) -> Result<(), Error> {
+        self.storage
+            .clear_application()
+            .await
+            .map_err(storage_error)
+    }
+    async fn remove(&mut self, key: u32) -> Result<(), Error> {
+        self.storage
+            .remove_initialization(key)
+            .await
+            .map_err(storage_error)
+    }
+    async fn update_metadata_version(&mut self) -> Result<(), Error> {
+        self.storage
+            .update_metadata_version()
+            .await
+            .map_err(storage_error)
+    }
     fn now_ms(&self) -> u64 {
         Instant::now().as_millis()
     }
@@ -56,10 +80,11 @@ impl Backend for DeviceBackend<'_> {
             .map_err(storage_error)?
             .ok_or(Error::MissingMetadata)?;
         Ok(
-            if super::storage_version_supported(metadata.version, storage::VERSION) {
-                Partition::Compatible
-            } else {
-                Partition::DifferentVersion
+            match super::lifecycle::upgrade(metadata.version, storage::VERSION) {
+                super::lifecycle::Upgrade::Current => Partition::Compatible,
+                super::lifecycle::Upgrade::Migrate => Partition::Migrate,
+                super::lifecycle::Upgrade::DowngradeBlocked => Partition::DowngradeBlocked,
+                super::lifecycle::Upgrade::Unsupported => Partition::DifferentVersion,
             },
         )
     }

@@ -18,15 +18,16 @@ the browser implementation work. This roadmap is the release checklist.
 
 | Area | Present now | Still needed for the alpha |
 | --- | --- | --- |
-| Startup | Local button-confirmed setup/resume, durable settings and credential-key bundle, separate authenticated completion, startup ready/recovery states | Physical qualification, future settings/reset transactions and browser setup orchestration |
-| Storage | Fixed 3 MiB boundary; byte-value map; metadata; encrypted single-value wrapper | Stable application key allocation/encodings, transaction/recovery policy, compatibility checks and migrations |
-| Keys | TRNG-seeded CSPRNG; guarded OTP reader; opt-in hardware writes; separate insecure flash test backend | Qualified provisioning lifecycle, replaceable credential key under the immutable root, reset behavior |
-| CTAP | Bounded codec, ES256 discoverable/allow-list flows, ClientPIN, durable counters, button UP and queued USB owner | Reset, recovery/update policy and full qualification |
+| Startup | Local button-confirmed setup/resume, durable settings and credential-key bundle, separate authenticated completion, startup ready/recovery states | Physical qualification, mutable settings API and browser setup orchestration |
+| Storage | Fixed 3 MiB boundary; byte-value map; metadata; encrypted single-value wrapper | Stable application key allocation/encodings, physical qualification of transaction/recovery policy and migrations |
+| Keys | TRNG-seeded CSPRNG; guarded OTP reader; opt-in hardware writes; separate insecure flash test backend | Qualified provisioning lifecycle and physical reset qualification |
+| CTAP | Bounded codec, ES256 discoverable/allow-list flows, ClientPIN, durable counters, button UP and queued USB owner | Full CTAP/physical qualification |
 | USB | FIDO HID transport and framed CDC ACM; public INFO including startup state | Readiness integration, restricted setup protocol, recovery/update entry workflow |
 | Web app | Serial console, INFO display, text/hex traffic and tests | Installation/update wizard, WebUSB transport, artifact verification, setup/resume UX and WebAuthn test flow |
 | Secure boot | Public-key-hash storage API, not activation | Signed artifact pipeline, complete policy/provisioning implementation, verified recovery and key-rotation plan |
 
-The firmware currently cannot create or use passkeys. The web app currently
+The firmware implements development passkey registration/assertion, management, extensions,
+and [reset/recovery and firmware upgrade lifecycle](reset-and-upgrades.md). The web app currently
 cannot flash firmware, enable secure boot, or initialize the device. Host tests
 and successful cross-compilation do not establish those capabilities.
 
@@ -78,7 +79,7 @@ Do this before issuing an alpha that testers will expect to upgrade.
 - [ ] Retain the existing top-level metadata contract: `DOOHICKEY` magic and
   **one firmware `version` field**. Do not add separate schema/layout versions.
   Maintain a compatibility/migration table keyed by firmware versions instead.
-- [ ] Extend the coordinator's initial explicit `0.1.0` compatibility support into
+- [x] Extend the coordinator's initial explicit `0.1.0` compatibility support into
   explicit decisions: known compatible, migration required, unsupported newer
   data, or unsupported downgrade. A compatible patch update should not require
   destructive initialization or a metadata write every boot.
@@ -87,7 +88,7 @@ Do this before issuing an alpha that testers will expect to upgrade.
   version must not become an encryption salt or part of existing record AAD.
 - [ ] Define the root/credential key hierarchy below and freeze it before real
   credentials are issued.
-- [ ] Decide the firmware update layout inside the first 3 MiB. The recommended
+- [x] Decide the firmware update layout inside the first 3 MiB. The chosen
   first alpha uses the existing single application region with recoverable
   BOOTSEL reinstall. It does **not** promise automatic rollback after power loss.
   If A/B updates are required for the alpha, design and qualify them now within
@@ -134,7 +135,7 @@ reachable in setup/recovery; do not start credential services before validation.
 The initial setup implementation and host failure tests now exist: physical
 confirmation, validated root provisioning/seal resume, settings/key bundle and a
 separate authenticated final commit. The items below remain release gates,
-including physical qualification and the separate reset lifecycle. Base
+including physical qualification. The reset lifecycle is implemented. Base
 initialization readiness does not mean the CTAP backend is operational.
 
 - [ ] Specify persistent settings defaults and which values may be changed
@@ -163,7 +164,7 @@ initialization readiness does not mean the CTAP backend is operational.
 - [ ] Handle the existing-root/erased-flash case separately. Preserve OTP,
   require reinitialization authorization, and create fresh mutable application
   state. Missing metadata or failed decryption must not appear as an empty store.
-- [ ] Implement CTAP reset on its specified FIDO path: invalidate all credentials,
+- [x] Implement CTAP reset on its specified FIDO path: invalidate all credentials,
   replace the mutable credential key and reset required PIN/token/state values
   while preserving the device's immutable root and secure-boot trust policy.
   Define physical confirmation and timing according to the selected CTAP profile.

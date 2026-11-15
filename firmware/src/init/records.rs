@@ -1,4 +1,5 @@
-//! Persistent v1 encodings. Never renumber/reuse keys or change bytes in place.
+//! Fixed persistent encodings; state v2 retains the v1 layout with a new guard.
+//! Never renumber/reuse keys or change field meaning in place.
 //! Top-level metadata still contains only magic and the firmware version.
 use super::Error;
 use doohickey_crypto::{ctap::sha256, secrets::MasterKey};
@@ -18,6 +19,7 @@ pub(super) const COMPLETION_CONTEXT: &[u8] = b"DOOHICKEY initialization commit v
 pub(super) const CONTEXT: &[u8] = b"DOOHICKEY initialization state v1/fffffe01";
 const JOURNAL_MAGIC: &[u8; 8] = b"DOOHSET1";
 const STATE_MAGIC: &[u8; 8] = b"DOOHCFG1";
+const CURRENT_STATE_MAGIC: &[u8; 8] = b"DOOHCFG2";
 const COMPLETE: &[u8; 8] = b"COMPLETE";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,7 +100,7 @@ impl Journal {
 
 pub(super) fn encode_state(journal: &Journal, key: &[u8; 32]) -> Zeroizing<[u8; STATE_SIZE]> {
     let mut bytes = Zeroizing::new([0; STATE_SIZE]);
-    bytes[..8].copy_from_slice(STATE_MAGIC);
+    bytes[..8].copy_from_slice(CURRENT_STATE_MAGIC);
     bytes[8..24].copy_from_slice(&journal.id);
     bytes[24..56].copy_from_slice(&sha256(&journal.encode()));
     bytes[56..60].copy_from_slice(&Settings::default().user_presence_timeout_ms.to_le_bytes());
@@ -108,7 +110,7 @@ pub(super) fn encode_state(journal: &Journal, key: &[u8; 32]) -> Zeroizing<[u8; 
 }
 pub(super) fn decode_state(bytes: &[u8], journal: &Journal) -> Result<Initialized, Error> {
     if bytes.len() != STATE_SIZE
-        || &bytes[..8] != STATE_MAGIC
+        || (&bytes[..8] != STATE_MAGIC && &bytes[..8] != CURRENT_STATE_MAGIC)
         || &bytes[92..] != COMPLETE
         || !bool::from(bytes[8..24].ct_eq(&journal.id))
         || !bool::from(bytes[24..56].ct_eq(&sha256(&journal.encode())))

@@ -27,7 +27,7 @@ First set writes/verifies the witness before writing/verifying the PIN state.
 Both absent means a pre-PIN device. Only one absent, corrupt ciphertext or an
 unknown format fails closed; it never silently reverts to unset. A power cut
 during first setup can therefore leave recovery required for PIN operations.
-There is no automatic destructive repair. Future reset/recovery work must handle
+There is no automatic destructive repair. [Physically confirmed reset/recovery](reset-and-upgrades.md) handles
 this explicitly; do not erase the records to clear a user's forgotten PIN.
 
 At most eight PIN attempts are allowed. Each candidate consumes a persisted,
@@ -64,7 +64,7 @@ callers that need UV must request and verify it.
 No storage layer prevents rollback of a valid flash snapshot. Deleting both PIN
 records, downgrading to firmware that ignores PINs, or bypassing trusted firmware
 is outside this protection. Signed update/downgrade policy, secure boot, real OTP
-qualification and reset remain alpha requirements. This is not a serial backup
+qualification remains an alpha requirement. Reset is implemented with physical confirmation. This is not a serial backup
 password or serial authorization mechanism.
 
 ## Try it

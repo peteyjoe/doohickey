@@ -95,7 +95,8 @@ and entropy succeed; serial ctap_ready reflects that availability.
 ClientPIN implements protocol 2, persistent retries, scoped expiring RAM tokens
 and PIN-based UV; see [the PIN guide](../../../docs/client-pin.md). Discoverable credentials and getNextAssertion are implemented; see the
 [format and limits](../../../docs/discoverable-credentials.md). The target profile
-still needs reset, remaining conformance work and qualification. See
+still needs remaining conformance work and qualification.
+[Reset and upgrades](../../../docs/reset-and-upgrades.md) are implemented by the application coordinator. See
 [management and extension integration](../../../docs/credential-management-and-extensions.md). It remains a development build,
 not a full CTAP 2.3 implementation or compliance claim.
 

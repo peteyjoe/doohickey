@@ -1,5 +1,6 @@
-//! Durable, explicitly authorized initialization. Secure-boot provisioning and
-//! CTAP credential operations are separate lifecycles. See README.md.
+//! Durable initialization, reset and upgrade transactions. Secure-boot trust
+//! provisioning stays separate; reset never programs OTP. See README.md.
+pub mod lifecycle;
 mod state;
 pub use state::{Reason, Report, State};
 mod coordinator;
