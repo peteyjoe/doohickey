@@ -14,9 +14,9 @@
 <script setup>
 // placeholder text, get the real flow from your firmware teammates
 const steps = [
-  { title: '1. Register', text: 'Plug in the key and link it to your account.' },
-  { title: '2. Tap to verify', text: 'Touch the key when a site asks you to log in.' },
-  { title: '3. Signed in', text: 'The site verifies the key. No password needed.' },
+  { title: '1. Insert', text: 'Insert the key into your computer\'s USB port.' },
+  { title: '2. Transfer The uf2 file', text: 'Transfer the uf2 file to the key.' },
+  { title: '3. confirm', text: 'Confirm the key is recognized by your computer and ready to use.' },
 ]
 </script>
 

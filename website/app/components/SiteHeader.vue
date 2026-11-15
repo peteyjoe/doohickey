@@ -1,5 +1,5 @@
 <template>
-  <UHeader title="Le-Key">
+  <UHeader title="The DoohicKEY">
     <UNavigationMenu :items="items" />  <!-- default slot = center nav links -->
     <template #right>
       <UColorModeButton />  <!-- light/dark toggle, built in -->

@@ -1,6 +1,6 @@
 <template>
   <section class="hero">
-    <h1>Le-Key</h1>
+    <h1>The DoohicKEY</h1>
     <p>An open-source hardware key built on the RP2350 for secure authentication</p>
   </section>
 </template>
