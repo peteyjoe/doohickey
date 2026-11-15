@@ -38,7 +38,8 @@ Main uses `cbor::AuthenticatorBackend` and the bounded exchange with the single
 application/storage owner. The development FIDO_2_0 profile supports ES256
 registration, packed self-attestation and allow-list assertions with real UP.
 Protocol-2 ClientPIN and PIN-based UV are connected. Discoverable accounts and channel-scoped getNextAssertion are connected.
-Reset, credential management and extensions remain unavailable. `ctap_ready` reports this limited profile; serial
+PIN-authorized credential management, credProtect and hmac-secret are connected;
+reset remains unavailable. `ctap_ready` reports this limited profile; serial
 `authentication_ready` remains false. See the [credential milestone guide](../../../docs/credential-milestone.md)
 for button behavior, persistence and the independent client test.
 

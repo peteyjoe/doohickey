@@ -5,9 +5,13 @@
 mod authenticator;
 #[path = "../../ctap/mod.rs"]
 mod ctap;
+#[path = "../../ctap/management.rs"]
+mod management;
 #[path = "../../ctap/pin_session.rs"]
 mod pin_session;
-use ctap::{Request, Result, Status, cbor, credentials, info, pin_uv};
+use ctap::{
+    Request, Result, Status, cbor, credential_management, credentials, extensions, info, pin_uv,
+};
 #[path = "support/nor_credential_storage.rs"]
 mod storage;
 use doohickey_crypto::{ctap::sha256, secrets::MasterKey};

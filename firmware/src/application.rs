@@ -171,6 +171,7 @@ pub async fn run(
             }
             if result.is_err() {
                 session.clear_assertions();
+                session.clear_management();
             }
             exchange.complete(result, &output[..]);
             // Input contains account identifiers/encrypted PIN fields. Never log.

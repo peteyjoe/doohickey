@@ -1,5 +1,5 @@
 //! Development discovery and operational ES256 profiles. Neither advertises
-//! unfinished management, extensions or CTAP 2.3 conformance.
+//! unfinished features or CTAP 2.3 conformance.
 use super::{Result, cbor::Encoder};
 use zeroize::Zeroize;
 
@@ -22,7 +22,7 @@ fn encode_profile(output: &mut [u8], operational: bool, pin: Option<bool>) -> Re
     let result = (|| {
         let mut e = Encoder::new(output);
         e.map(if pin.is_some() {
-            9
+            10
         } else if operational {
             8
         } else {
@@ -31,10 +31,16 @@ fn encode_profile(output: &mut [u8], operational: bool, pin: Option<bool>) -> Re
         e.unsigned(1)?;
         e.array(1)?;
         e.text(DISCOVERY_VERSION)?;
+        if pin.is_some() {
+            e.unsigned(2)?;
+            e.array(2)?;
+            e.text("credProtect")?;
+            e.text("hmac-secret")?;
+        }
         e.unsigned(3)?;
         e.bytes(&DEVELOPMENT_AAGUID)?;
         e.unsigned(4)?;
-        e.map(if pin.is_some() { 5 } else { 3 })?;
+        e.map(if pin.is_some() { 6 } else { 3 })?;
         e.text("rk")?;
         e.boolean(pin.is_some())?;
         e.text("up")?;
@@ -42,6 +48,8 @@ fn encode_profile(output: &mut [u8], operational: bool, pin: Option<bool>) -> Re
         e.text("plat")?;
         e.boolean(false)?;
         if let Some(configured) = pin {
+            e.text("credMgmt")?;
+            e.boolean(true)?;
             e.text("clientPin")?;
             e.boolean(configured)?;
             e.text("pinUvAuthToken")?;

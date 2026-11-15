@@ -89,7 +89,14 @@ def check_ctap(device):
     send_hid(device, channel, 0x10, b"\x04")
     actual = receive_hid(device, channel, 0x10)
     resident_profiles = tuple(profile.replace(b"\x62rk\xf4", b"\x62rk\xf5") for profile in (pin_profile, pin_set))
-    if actual not in (expected_info, pin_profile, pin_set, *resident_profiles):
+    management_profiles = []
+    for profile in resident_profiles:
+        value = profile.replace(b"\x00\xa9", b"\x00\xaa", 1)
+        value = value.replace(b"\x03\x50DOOHICKEY-DEV001", b"\x02\x82\x6bcredProtect\x6bhmac-secret\x03\x50DOOHICKEY-DEV001", 1)
+        value = value.replace(b"\x04\xa5", b"\x04\xa6", 1)
+        value = value.replace(b"\x69clientPin", b"\x68credMgmt\xf5\x69clientPin", 1)
+        management_profiles.append(value)
+    if actual not in (expected_info, pin_profile, pin_set, *resident_profiles, *management_profiles):
         raise RuntimeError("Unexpected operational GetInfo profile")
     expected_info = actual
     rp = ("smoke-" + os.urandom(8).hex() + ".invalid").encode()

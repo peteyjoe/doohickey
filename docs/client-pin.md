@@ -40,13 +40,15 @@ key with the hardware-seeded RNG. Writes are awaited through completion.
 
 ## Authorization
 
-Tokens are random 32-byte RAM-only secrets. Scoped tokens support only
-makeCredential/getAssertion and require an RP ID. Credential-management and
-other unsupported permissions are rejected. Legacy tokens bind to their first
-RP. All credential authorization uses protocol-2 HMAC over clientDataHash.
+Tokens are random 32-byte RAM-only secrets. Scoped tokens support makeCredential/getAssertion and credential management.
+MC/GA require an RP ID; global CM enumeration uses an unbound CM grant, while
+CM deletion and label updates may be RP-bound. Other permissions are rejected.
+Legacy grants include the implemented default permissions and bind to the
+first RP used for a credential operation. All credential authorization uses protocol-2 HMAC over clientDataHash.
 
-Tokens expire after 30 seconds and are consumed after a credential operation;
-obtain a fresh token for another operation. Expiry is rechecked before releasing
+Tokens expire after 30 seconds and MC/GA grants are consumed after a credential operation;
+obtain a fresh token for another credential operation. CM grants remain live
+for the management session within that deadline. Expiry is rechecked before releasing
 the response, including after waiting for the button. Cancel, disconnect,
 resynchronization, channel switching and PIN changes invalidate tokens.
 No tokens or key-agreement private keys survive reboot.

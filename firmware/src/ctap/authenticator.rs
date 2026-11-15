@@ -4,6 +4,7 @@ use super::{
     Request, Result, Status,
     cbor::Encoder,
     credentials::{self, GetAssertion, MakeCredential},
+    extensions::{AssertionEvidence, CredProtect, HmacSecret, HmacSecretInput},
     pin_session::Session,
     pin_uv::Permission,
 };
@@ -19,6 +20,43 @@ pub(crate) struct Continuation {
     verified: bool,
     up: bool,
     deadline: u64,
+    hmac: Option<OwnedHmac>,
+}
+struct OwnedHmac {
+    point: [u8; 65],
+    enc: Zeroizing<[u8; 80]>,
+    len: usize,
+    auth: Zeroizing<[u8; 32]>,
+}
+impl OwnedHmac {
+    fn new(input: HmacSecretInput<'_>) -> Result<Self> {
+        if input.protocol != Some(2) {
+            return Err(Status::PinAuthInvalid);
+        }
+        if !matches!(input.salt_enc.len(), 48 | 80) || input.salt_auth.len() != 32 {
+            return Err(Status::InvalidParameter);
+        }
+        let mut out = Self {
+            point: *input.key_agreement,
+            enc: Zeroizing::new([0; 80]),
+            len: input.salt_enc.len(),
+            auth: Zeroizing::new([0; 32]),
+        };
+        out.enc[..out.len].copy_from_slice(input.salt_enc);
+        out.auth.copy_from_slice(input.salt_auth);
+        Ok(out)
+    }
+    fn input(&self) -> HmacSecretInput<'_> {
+        HmacSecretInput {
+            key_agreement: &self.point,
+            salt_enc: &self.enc[..self.len],
+            salt_auth: &self.auth[..],
+            protocol: Some(2),
+        }
+    }
+}
+fn eligible(record: &Credential, verified: bool, in_list: bool) -> Result<bool> {
+    Ok(CredProtect::try_from(record.cred_protect())?.permits_assertion(verified, in_list))
 }
 const _: () = assert!(repository::ID_SIZE == 60);
 
@@ -81,10 +119,25 @@ pub async fn execute_with_session<R: CryptoRngCore>(
     if !matches!(request, Request::GetNextAssertion) {
         session.clear_assertions();
     }
+    if !matches!(&request, Request::CredentialManagement(r) if super::management::is_next(r)) {
+        session.clear_management();
+    }
     let result = async {
         check_cancel(presence)?;
         let configured = session.load(repository).await?.is_some();
         match request {
+            Request::CredentialManagement(request) => {
+                let result =
+                    super::management::handle(repository, request, session, now, output, &|| {
+                        presence.now_ms()
+                    })
+                    .await;
+                if result.is_ok() && !session.grant_valid(presence.now_ms()) {
+                    Err(Status::PinAuthInvalid)
+                } else {
+                    result
+                }
+            }
             Request::ClientPin(request) => session.handle(repository, request, now, output).await,
             Request::MakeCredential(request) => {
                 if request.auth.parameter == Some(&[]) {
@@ -150,7 +203,7 @@ pub async fn execute_with_session<R: CryptoRngCore>(
             Request::GetNextAssertion => {
                 next_assertion(repository, presence, output, session, now).await
             }
-            // Reset/PIN/management must not acquire provisional success paths.
+            // Unsupported commands must not acquire provisional success paths.
             _ => Err(Status::InvalidCommand),
         }
     }
@@ -158,6 +211,7 @@ pub async fn execute_with_session<R: CryptoRngCore>(
     if result.is_err() {
         session.consume();
         session.clear_assertions();
+        session.clear_management();
         output.zeroize();
     }
     result
@@ -189,7 +243,8 @@ async fn make<R: CryptoRngCore>(
     if let Some(list) = request.exclude_list {
         for descriptor in list {
             if descriptor.credential_type == "public-key"
-                && repository.read(descriptor.id, &rp_hash).await?.is_some()
+                && let Some(record) = repository.read(descriptor.id, &rp_hash).await?
+                && (record.cred_protect() != 3 || verified)
             {
                 // Exclusion is disclosed only after a presence attempt, even
                 // when that attempt expires, per the command algorithm.
@@ -205,16 +260,24 @@ async fn make<R: CryptoRngCore>(
     check_cancel(presence)?;
     let credential = if request.options.resident_key {
         repository
-            .create_discoverable(
+            .create_discoverable_extended(
                 request.rp.id,
                 request.user.id,
                 request.user.name,
                 request.user.display_name,
                 request.rp.name,
+                request.extensions.cred_protect.unwrap_or_default() as u8,
+                true,
             )
             .await?
     } else {
-        repository.create(&rp_hash, request.user.id).await?
+        repository
+            .create_extended(
+                &rp_hash,
+                request.user.id,
+                request.extensions.cred_protect.unwrap_or_default() as u8,
+            )
+            .await?
     };
     check_cancel(presence)?;
     let mut auth_data = [0; 256];
@@ -236,7 +299,23 @@ async fn make<R: CryptoRngCore>(
     e.bytes(&public[1..33])?;
     e.integer(-3)?;
     e.bytes(&public[33..])?;
-    let auth_len = 115 + e.len();
+    let mut auth_len = 115 + e.len();
+    let extension_count = usize::from(request.extensions.cred_protect.is_some())
+        + usize::from(request.extensions.hmac_secret == Some(true));
+    if extension_count > 0 {
+        auth_data[32] |= 0x80;
+        let mut e = Encoder::new(&mut auth_data[auth_len..]);
+        e.map(extension_count)?;
+        if let Some(policy) = request.extensions.cred_protect {
+            e.text("credProtect")?;
+            e.unsigned(policy as u64)?;
+        }
+        if request.extensions.hmac_secret == Some(true) {
+            e.text("hmac-secret")?;
+            e.boolean(true)?;
+        }
+        auth_len += e.len();
+    }
     // Honor a supported preference; unsupported formats do not forbid the
     // default packed self-attestation. No device-wide attestation key exists.
     let none = request
@@ -296,12 +375,17 @@ async fn assertion<R: CryptoRngCore>(
         return Err(Status::InvalidParameter);
     }
     let rp_hash = sha256(request.rp_id.as_bytes());
+    if request.hmac_secret.is_some() && !request.options.user_presence {
+        return Err(Status::UnsupportedOption);
+    }
+    let hmac = request.hmac_secret.map(OwnedHmac::new).transpose()?;
     let mut candidates = repository::Discovery::default();
     let discovery = request.allow_list.is_none();
     if let Some(list) = request.allow_list {
         for descriptor in list {
             if descriptor.credential_type == "public-key"
-                && repository.read(descriptor.id, &rp_hash).await?.is_some()
+                && let Some(record) = repository.read(descriptor.id, &rp_hash).await?
+                && eligible(&record, verified, true)?
             {
                 candidates.ids[0].copy_from_slice(descriptor.id);
                 candidates.len = 1;
@@ -309,7 +393,17 @@ async fn assertion<R: CryptoRngCore>(
             }
         }
     } else {
-        candidates = repository.discover(&rp_hash).await?;
+        let all = repository.discover(&rp_hash).await?;
+        for id in &all.ids[..all.len] {
+            let record = repository
+                .read(id, &rp_hash)
+                .await?
+                .ok_or(Status::IntegrityFailure)?;
+            if eligible(&record, verified, false)? {
+                candidates.ids[candidates.len] = *id;
+                candidates.len += 1;
+            }
+        }
     }
     if candidates.len == 0 {
         return Err(Status::NoCredentials);
@@ -333,6 +427,8 @@ async fn assertion<R: CryptoRngCore>(
         (discovery && candidates.len > 1).then_some(candidates.len),
         presence,
         output,
+        hmac.as_ref(),
+        session.agreement(),
     )
     .await?;
     if discovery && candidates.len > 1 {
@@ -344,6 +440,7 @@ async fn assertion<R: CryptoRngCore>(
             verified,
             up: request.options.user_presence,
             deadline: now.max(presence.now_ms()).saturating_add(30_000),
+            hmac,
         });
     }
     Ok(result)
@@ -373,6 +470,8 @@ async fn next_assertion<R: CryptoRngCore>(
         None,
         presence,
         output,
+        state.hmac.as_ref(),
+        session.agreement(),
     )
     .await?;
     state.next += 1;
@@ -393,19 +492,63 @@ async fn assertion_response<R: CryptoRngCore>(
     count: Option<usize>,
     presence: &impl Presence,
     output: &mut [u8],
+    hmac: Option<&OwnedHmac>,
+    agreement: Option<&doohickey_crypto::ctap::PinUvKeyAgreement>,
 ) -> Result<usize> {
     if output.len() < if user { 512 } else { 256 } {
         return Err(Status::Other);
     }
     check_cancel(presence)?;
+    let mut encrypted = Zeroizing::new([0; 80]);
+    let extension_len = if let (Some(input), Some(seeds)) = (hmac, credential.hmac_seeds()) {
+        let secret = HmacSecret::from_bytes(Zeroizing::new(*seeds));
+        secret.process(
+            agreement.ok_or(Status::PinAuthInvalid)?,
+            input.input(),
+            AssertionEvidence {
+                user_presence_requested: up,
+                user_present: up,
+                user_verified: verified,
+            },
+            repository.rng(),
+            &mut encrypted[..],
+        )?
+    } else {
+        if let Some(input) = hmac {
+            let shared = agreement
+                .ok_or(Status::PinAuthInvalid)?
+                .agree(&input.point, doohickey_crypto::ctap::PinUvProtocol::Two)
+                .map_err(|_| Status::InvalidParameter)?;
+            shared
+                .verify_authentication(&input.enc[..input.len], &input.auth[..])
+                .map_err(|_| Status::PinAuthInvalid)?;
+            let mut salts = Zeroizing::new([0; 64]);
+            let n = shared
+                .decrypt(&input.enc[..input.len], &mut salts[..])
+                .map_err(|_| Status::InvalidParameter)?;
+            if n != 32 && n != 64 {
+                return Err(Status::InvalidParameter);
+            }
+        }
+        0
+    };
     let counter = repository.advance_counter(credential).await?;
     check_cancel(presence)?;
-    let mut auth = [0; 37];
+    let mut auth = [0; 160];
     auth[..32].copy_from_slice(credential.rp_id_hash());
     auth[32] = u8::from(up) | if verified { 4 } else { 0 };
-    auth[33..].copy_from_slice(&counter.to_be_bytes());
+    auth[33..37].copy_from_slice(&counter.to_be_bytes());
+    let mut auth_len = 37;
+    if extension_len > 0 {
+        auth[32] |= 0x80;
+        let mut e = Encoder::new(&mut auth[37..]);
+        e.map(1)?;
+        e.text("hmac-secret")?;
+        e.bytes(&encrypted[..extension_len])?;
+        auth_len += e.len();
+    }
     let mut signature = Zeroizing::new([0; 72]);
-    let n = sign(credential, &auth, hash, &mut signature[..])?;
+    let n = sign(credential, &auth[..auth_len], hash, &mut signature[..])?;
     let mut e = Encoder::new(output);
     e.map(3 + usize::from(user) + usize::from(count.is_some()))?;
     e.unsigned(1)?;
@@ -415,7 +558,7 @@ async fn assertion_response<R: CryptoRngCore>(
     e.text("type")?;
     e.text("public-key")?;
     e.unsigned(2)?;
-    e.bytes(&auth)?;
+    e.bytes(&auth[..auth_len])?;
     e.unsigned(3)?;
     e.bytes(&signature[..n])?;
     if user {

@@ -5,11 +5,15 @@
 mod authenticator;
 #[path = "../../ctap/mod.rs"]
 mod ctap;
+#[path = "../../ctap/management.rs"]
+mod management;
 #[path = "../../ctap/pin_session.rs"]
 mod pin_session;
 #[path = "../tests/support/credential_storage.rs"]
 mod storage;
-use ctap::{Request, Result, Status, cbor, credentials, info, pin_uv};
+use ctap::{
+    Request, Result, Status, cbor, credential_management, credentials, extensions, info, pin_uv,
+};
 use rand_core::SeedableRng;
 use std::io::{self, BufRead, Write};
 use zeroize::Zeroizing;

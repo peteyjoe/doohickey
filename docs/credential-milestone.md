@@ -4,7 +4,8 @@ The firmware implements a development FIDO_2_0 profile: ES256 non-discoverable
 credentials, packed self-attestation, allow-list assertions and physical user
 presence. This supports a registration/login flow with user verification
 discouraged and resident keys discouraged. It is not the final CTAP 2.3 profile
-or a certified authenticator. Credential management, reset and extensions remain unadvertised/unavailable.
+or a certified authenticator. PIN-authorized credential management and credential extensions are implemented;
+reset remains unavailable. See [the current scope](credential-management-and-extensions.md).
 [Discoverable credentials](discoverable-credentials.md) are implemented; the guide
 below still describes the saved allow-list fixture flow. [ClientPIN and PIN-based UV](client-pin.md) are now
 implemented; use `--pin` with the credential tool once a PIN is set.

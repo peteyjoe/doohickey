@@ -2,7 +2,7 @@
 //! ClientPIN authenticator. See README.md for implemented scope and integration.
 //!
 //! Bounded decoding, PIN/UV and discoverable ES256 credentials are connected.
-//! Management, extensions and the full CTAP 2.3 profile remain targets;
+//! Management and credential extensions are connected; full CTAP 2.3 remains a target.
 //! advertise only behavior actually connected to USB.
 
 #[cfg(target_os = "none")]
@@ -15,6 +15,8 @@ pub mod credentials;
 pub mod exchange;
 pub mod extensions;
 pub mod info;
+#[cfg(target_os = "none")]
+pub mod management;
 #[cfg(target_os = "none")]
 pub mod pin_session;
 pub mod pin_uv;

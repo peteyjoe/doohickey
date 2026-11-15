@@ -3,12 +3,16 @@
 mod authenticator;
 #[path = "../../ctap/mod.rs"]
 mod ctap;
+#[path = "../../ctap/management.rs"]
+mod management;
 #[path = "../../ctap/pin_session.rs"]
 mod pin_session;
 #[path = "support/credential_storage.rs"]
 mod storage;
 // The authenticator's parent is the test crate instead of firmware::ctap.
-use ctap::{Request, Result, Status, cbor, credentials, info, pin_uv};
+use ctap::{
+    Request, Result, Status, cbor, credential_management, credentials, extensions, info, pin_uv,
+};
 use doohickey_crypto::{ctap::sha256, secrets::MasterKey};
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use rand_chacha::ChaCha20Rng;
@@ -90,6 +94,16 @@ fn token(
     pin: &[u8],
     now: u64,
 ) -> Result<[u8; 32]> {
+    scoped_token(repo, session, pin, now, 3, Some("example.com"))
+}
+fn scoped_token(
+    repo: &mut Repository<'_, '_, '_, '_, ChaCha20Rng>,
+    session: &mut pin_session::Session,
+    pin: &[u8],
+    now: u64,
+    permissions: u64,
+    rp_id: Option<&str>,
+) -> Result<[u8; 32]> {
     let (shared, point) = agreement(repo, session);
     let mut encrypted = [0; 32];
     let mut random = ChaCha20Rng::from_seed([27; 32]);
@@ -103,8 +117,8 @@ fn token(
             protocol: 2,
             key_agreement: &point,
             pin_hash_enc: &encrypted,
-            permissions: pin_uv::Permissions::from_bits(3).unwrap(),
-            rp_id: Some("example.com"),
+            permissions: pin_uv::Permissions::from_bits(permissions).unwrap(),
+            rp_id,
         },
         now,
         &mut out,
@@ -1234,5 +1248,657 @@ fn rk_make_commits_discoverable_credential_and_info_advertises_it() {
             .unwrap()
             .boolean()
             .unwrap()
+    );
+}
+
+fn descriptor_bytes(id: &[u8]) -> Vec<u8> {
+    let mut out = b"\xa2\x62id\x58".to_vec();
+    out.push(id.len() as u8);
+    out.extend(id);
+    out.extend(b"\x64type\x6apublic-key");
+    out
+}
+fn cm_wire(op: u8, params: Option<&[u8]>, grant: Option<&[u8; 32]>) -> Vec<u8> {
+    let mut out = vec![
+        10,
+        0xa0 + 1 + u8::from(params.is_some()) + 2 * u8::from(grant.is_some()),
+        1,
+        op,
+    ];
+    if let Some(params) = params {
+        out.push(2);
+        out.extend(params);
+    }
+    if let Some(grant) = grant {
+        let mut msg = vec![op];
+        msg.extend(params.unwrap_or(&[]));
+        out.extend([3, 2, 4, 0x58, 32]);
+        out.extend(doohickey_crypto::ctap::hmac_sha256(grant, &msg));
+    }
+    out
+}
+fn session_call(
+    repo: &mut Repository<'_, '_, '_, '_, ChaCha20Rng>,
+    session: &mut pin_session::Session,
+    wire: &[u8],
+    now: u64,
+) -> Result<Vec<u8>> {
+    let mut scratch = ctap::codec::Scratch::new();
+    let request = ctap::codec::decode(wire, &mut scratch)?;
+    let mut out = [0xa5; 1023];
+    match ready(authenticator::execute_with_session(
+        repo,
+        request,
+        &mut Presence::default(),
+        &mut out,
+        session,
+        now,
+    )) {
+        Ok(n) => {
+            if n > 0 {
+                assert!(cbor::decode(&out[..n]).is_ok());
+            }
+            Ok(out[..n].to_vec())
+        }
+        Err(error) => {
+            assert_eq!(out, [0; 1023]);
+            Err(error)
+        }
+    }
+}
+#[test]
+fn management_pin_authorization_enumerates_updates_and_deletes_without_key_changes() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let mut session = pin_session::Session::default();
+    let first = ready(repo.create_discoverable_extended(
+        "example.com",
+        b"user1",
+        Some("One"),
+        None,
+        Some("Example"),
+        2,
+        true,
+    ))
+    .unwrap();
+    let id = *first.id();
+    let public = first.public_key().unwrap();
+    let seeds = *first.hmac_seeds().unwrap();
+    ready(repo.create_discoverable("example.com", b"user2", Some("Two"), None, None)).unwrap();
+    ready(repo.create_discoverable("other.test", b"other", None, None, None)).unwrap();
+    set_pin(&mut repo, &mut session, b"1234").unwrap();
+    assert_eq!(
+        session_call(&mut repo, &mut session, &cm_wire(1, None, None), 0),
+        Err(Status::PinUvAuthTokenRequired)
+    );
+    let grant = scoped_token(&mut repo, &mut session, b"1234", 0, 4, None).unwrap();
+    let result = session_call(&mut repo, &mut session, &cm_wire(1, None, Some(&grant)), 0).unwrap();
+    assert_eq!(
+        cbor::decode(&result)
+            .unwrap()
+            .get_int(1)
+            .unwrap()
+            .unwrap()
+            .unsigned()
+            .unwrap(),
+        3
+    );
+    let result = session_call(&mut repo, &mut session, &cm_wire(2, None, Some(&grant)), 0).unwrap();
+    assert_eq!(
+        cbor::decode(&result)
+            .unwrap()
+            .get_int(5)
+            .unwrap()
+            .unwrap()
+            .unsigned()
+            .unwrap(),
+        2
+    );
+    let result = session_call(&mut repo, &mut session, &cm_wire(3, None, None), 1).unwrap();
+    assert!(cbor::decode(&result).unwrap().get_int(5).unwrap().is_none());
+    assert_eq!(
+        session_call(&mut repo, &mut session, &cm_wire(3, None, None), 2),
+        Err(Status::NotAllowed)
+    );
+    let grant = scoped_token(&mut repo, &mut session, b"1234", 0, 4, None).unwrap();
+    let mut params = vec![0xa1, 1, 0x58, 32];
+    params.extend(sha256(b"example.com"));
+    let result = session_call(
+        &mut repo,
+        &mut session,
+        &cm_wire(4, Some(&params), Some(&grant)),
+        0,
+    )
+    .unwrap();
+    let map = cbor::decode(&result).unwrap();
+    assert_eq!(map.get_int(9).unwrap().unwrap().unsigned().unwrap(), 2);
+    assert_eq!(map.get_int(10).unwrap().unwrap().unsigned().unwrap(), 2);
+    let result = session_call(&mut repo, &mut session, &cm_wire(5, None, None), 1).unwrap();
+    assert!(cbor::decode(&result).unwrap().get_int(9).unwrap().is_none());
+    let mut update = vec![0xa2, 2];
+    update.extend(descriptor_bytes(&id));
+    update.extend(b"\x03\xa2\x62id\x45user1\x64name\x63New");
+    session_call(
+        &mut repo,
+        &mut session,
+        &cm_wire(7, Some(&update), Some(&grant)),
+        2,
+    )
+    .unwrap();
+    let record = ready(repo.read(&id, &sha256(b"example.com")))
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.name(), Some("New"));
+    assert_eq!(record.display_name(), None);
+    assert_eq!(record.public_key().unwrap(), public);
+    assert_eq!(record.hmac_seeds().unwrap(), &seeds);
+    assert_eq!(record.cred_protect(), 2);
+    let mut deletion = vec![0xa1, 2];
+    deletion.extend(descriptor_bytes(&id));
+    session_call(
+        &mut repo,
+        &mut session,
+        &cm_wire(6, Some(&deletion), Some(&grant)),
+        3,
+    )
+    .unwrap();
+    assert!(
+        ready(repo.read(&id, &sha256(b"example.com")))
+            .unwrap()
+            .is_none()
+    );
+}
+#[test]
+fn management_enforces_exact_mac_rp_scope_timeout_and_interruption() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let mut session = pin_session::Session::default();
+    let record = ready(repo.create_discoverable("example.com", b"user", None, None, None)).unwrap();
+    let id = *record.id();
+    ready(repo.create_discoverable("other.test", b"other", None, None, None)).unwrap();
+    set_pin(&mut repo, &mut session, b"1234").unwrap();
+    let wrong = token(&mut repo, &mut session, b"1234", 0).unwrap();
+    assert_eq!(
+        session_call(&mut repo, &mut session, &cm_wire(1, None, Some(&wrong)), 0),
+        Err(Status::PinAuthInvalid)
+    );
+    let bound = scoped_token(&mut repo, &mut session, b"1234", 0, 4, Some("other.test")).unwrap();
+    let mut deletion = vec![0xa1, 2];
+    deletion.extend(descriptor_bytes(&id));
+    assert_eq!(
+        session_call(
+            &mut repo,
+            &mut session,
+            &cm_wire(6, Some(&deletion), Some(&bound)),
+            0
+        ),
+        Err(Status::PinAuthInvalid)
+    );
+    assert!(
+        ready(repo.read(&id, &sha256(b"example.com")))
+            .unwrap()
+            .is_some()
+    );
+    let grant = scoped_token(&mut repo, &mut session, b"1234", 0, 4, None).unwrap();
+    let mut params = vec![0xa2, 1, 0x58, 32];
+    params.extend(sha256(b"example.com"));
+    params.extend([0x18, 99, 0xf5]);
+    let good = cm_wire(4, Some(&params), Some(&grant));
+    session_call(&mut repo, &mut session, &good, 0).unwrap();
+    let mut tampered = good.clone();
+    let index = tampered.iter().position(|b| *b == 0xf5).unwrap();
+    tampered[index] = 0xf4;
+    assert_eq!(
+        session_call(&mut repo, &mut session, &tampered, 0),
+        Err(Status::PinAuthInvalid)
+    );
+    let grant = scoped_token(&mut repo, &mut session, b"1234", 0, 4, None).unwrap();
+    session_call(&mut repo, &mut session, &cm_wire(2, None, Some(&grant)), 0).unwrap();
+    assert_eq!(
+        session_call(&mut repo, &mut session, &cm_wire(3, None, None), 30000),
+        Err(Status::NotAllowed)
+    );
+    let grant = scoped_token(&mut repo, &mut session, b"1234", 0, 4, None).unwrap();
+    session_call(&mut repo, &mut session, &cm_wire(2, None, Some(&grant)), 0).unwrap();
+    session.invalidate();
+    assert_eq!(
+        session_call(&mut repo, &mut session, &cm_wire(3, None, None), 1),
+        Err(Status::NotAllowed)
+    );
+}
+#[test]
+fn credprotect_persistence_filters_discovery_allow_lists_and_exclusions() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let level2 =
+        ready(repo.create_discoverable_extended("example.com", b"two", None, None, None, 2, true))
+            .unwrap();
+    let id2 = *level2.id();
+    let level3 = ready(repo.create_discoverable_extended(
+        "example.com",
+        b"three",
+        None,
+        None,
+        None,
+        3,
+        true,
+    ))
+    .unwrap();
+    let id3 = *level3.id();
+    let seeds = *level3.hmac_seeds().unwrap();
+    drop(repo);
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    assert_eq!(
+        ready(repo.read(&id3, &sha256(b"example.com")))
+            .unwrap()
+            .unwrap()
+            .hmac_seeds()
+            .unwrap(),
+        &seeds
+    );
+    let mut session = pin_session::Session::default();
+    let mut discovery = b"\x02\xa2\x01\x6bexample.com\x02\x58\x20".to_vec();
+    discovery.extend([9; 32]);
+    assert_eq!(
+        session_call(&mut repo, &mut session, &discovery, 0),
+        Err(Status::NoCredentials)
+    );
+    assert!(
+        session_call(
+            &mut repo,
+            &mut session,
+            &assertion_wire(&id2, "example.com", true),
+            0
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        session_call(
+            &mut repo,
+            &mut session,
+            &assertion_wire(&id3, "example.com", true),
+            0
+        ),
+        Err(Status::NoCredentials)
+    );
+    set_pin(&mut repo, &mut session, b"1234").unwrap();
+    let response = discovery_call(&mut repo, &mut session, 0, true);
+    assert_eq!(
+        cbor::decode(&response)
+            .unwrap()
+            .get_int(5)
+            .unwrap()
+            .unwrap()
+            .unsigned()
+            .unwrap(),
+        2
+    );
+}
+#[test]
+fn creation_extensions_are_signed_and_legacy_records_keep_default_policy() {
+    let mut store = storage::Storage::default();
+    let (legacy, _) = fixture(&mut store);
+    let mut request = make_wire();
+    request[1] = 0xa5;
+    request.extend(b"\x06\xa2\x6bcredProtect\x03\x6bhmac-secret\xf5");
+    let response = call(&mut store, &request, &mut Presence::default()).unwrap();
+    let map = cbor::decode(&response).unwrap();
+    let auth = map.get_int(2).unwrap().unwrap().bytes().unwrap();
+    assert_eq!(auth[32], 0xc1);
+    let extensions = cbor::decode(&auth[192..]).unwrap();
+    assert_eq!(
+        extensions
+            .get_text("credProtect")
+            .unwrap()
+            .unwrap()
+            .unsigned()
+            .unwrap(),
+        3
+    );
+    assert!(
+        extensions
+            .get_text("hmac-secret")
+            .unwrap()
+            .unwrap()
+            .boolean()
+            .unwrap()
+    );
+    let public = cbor::decode(&auth[115..192]).unwrap();
+    let mut point = vec![4];
+    point.extend(public.get_int(-2).unwrap().unwrap().bytes().unwrap());
+    point.extend(public.get_int(-3).unwrap().unwrap().bytes().unwrap());
+    let key = VerifyingKey::from_sec1_bytes(&point).unwrap();
+    let mut message = auth.to_vec();
+    message.extend([0; 32]);
+    let sig = map
+        .get_int(3)
+        .unwrap()
+        .unwrap()
+        .get_text("sig")
+        .unwrap()
+        .unwrap()
+        .bytes()
+        .unwrap();
+    key.verify(&message, &Signature::from_der(sig).unwrap())
+        .unwrap();
+    let master = key_fixture();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let old = ready(repo.read(&legacy, &sha256(b"example.com")))
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.cred_protect(), 1);
+    assert!(old.hmac_seeds().is_none());
+}
+fn key_fixture() -> MasterKey {
+    key()
+}
+
+#[test]
+fn hmac_secret_assertions_use_persisted_uv_specific_seeds_and_sign_extension_output() {
+    use doohickey_crypto::ctap::hmac_sha256;
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let mut session = pin_session::Session::default();
+    let credential = ready(repo.create_extended(&sha256(b"example.com"), b"user", 1)).unwrap();
+    let id = *credential.id();
+    let seeds = *credential.hmac_seeds().unwrap();
+    let public = VerifyingKey::from_sec1_bytes(&credential.public_key().unwrap()).unwrap();
+    for verified in [false, true] {
+        if verified {
+            set_pin(&mut repo, &mut session, b"1234").unwrap();
+        }
+        for salt_count in [1, 2] {
+            let hash = [9; 32];
+            let tag = verified
+                .then(|| hmac_sha256(&token(&mut repo, &mut session, b"1234", 0).unwrap(), &hash));
+            let (shared, point) = agreement(&mut repo, &mut session);
+            let mut client = rng();
+            let salts = [17; 64];
+            let mut enc = [0; 80];
+            let n = shared
+                .encrypt(&mut client, &salts[..salt_count * 32], &mut enc)
+                .unwrap();
+            let mut auth = [0; 32];
+            shared.authenticate(&enc[..n], &mut auth).unwrap();
+            let descriptor = [credentials::Descriptor {
+                credential_type: "public-key",
+                id: &id,
+            }];
+            let mut out = [0; 1023];
+            let request = Request::GetAssertion(credentials::GetAssertion {
+                rp_id: "example.com",
+                client_data_hash: &hash,
+                allow_list: Some(&descriptor),
+                options: credentials::AssertionOptions::default(),
+                auth: pin_uv::AuthParameters {
+                    protocol: tag.as_ref().map(|_| 2),
+                    parameter: tag.as_ref().map(|t| t.as_slice()),
+                },
+                hmac_secret: Some(extensions::HmacSecretInput {
+                    key_agreement: &point,
+                    salt_enc: &enc[..n],
+                    salt_auth: &auth,
+                    protocol: Some(2),
+                }),
+            });
+            let n = ready(authenticator::execute_with_session(
+                &mut repo,
+                request,
+                &mut Presence::default(),
+                &mut out,
+                &mut session,
+                0,
+            ))
+            .unwrap();
+            let map = cbor::decode(&out[..n]).unwrap();
+            let data = map.get_int(2).unwrap().unwrap().bytes().unwrap();
+            assert_eq!(data[32], 0x81 | if verified { 4 } else { 0 });
+            let encrypted = cbor::decode(&data[37..])
+                .unwrap()
+                .get_text("hmac-secret")
+                .unwrap()
+                .unwrap()
+                .bytes()
+                .unwrap();
+            let mut values = [0; 64];
+            assert_eq!(
+                shared.decrypt(encrypted, &mut values).unwrap(),
+                salt_count * 32
+            );
+            let expected = hmac_sha256(
+                if verified { &seeds[..32] } else { &seeds[32..] },
+                &salts[..32],
+            );
+            assert_eq!(&values[..32], &expected);
+            if salt_count == 2 {
+                assert_eq!(&values[32..], &expected);
+            }
+            let mut message = data.to_vec();
+            message.extend(hash);
+            let signature = map.get_int(3).unwrap().unwrap().bytes().unwrap();
+            public
+                .verify(&message, &Signature::from_der(signature).unwrap())
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        ready(repo.read(&id, &sha256(b"example.com")))
+            .unwrap()
+            .unwrap()
+            .hmac_seeds()
+            .unwrap(),
+        &seeds
+    );
+}
+#[test]
+fn hmac_secret_rejects_tampering_and_silent_requests_without_counter_updates() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let mut session = pin_session::Session::default();
+    let credential = ready(repo.create_extended(&sha256(b"example.com"), b"user", 1)).unwrap();
+    let id = *credential.id();
+    let (shared, point) = agreement(&mut repo, &mut session);
+    let mut encrypted = [0; 48];
+    shared
+        .encrypt(&mut rng(), &[8; 32], &mut encrypted)
+        .unwrap();
+    let mut tag = [0; 32];
+    shared.authenticate(&encrypted, &mut tag).unwrap();
+    tag[0] ^= 1;
+    for (up, expected) in [
+        (true, Status::PinAuthInvalid),
+        (false, Status::UnsupportedOption),
+    ] {
+        let descriptors = [credentials::Descriptor {
+            credential_type: "public-key",
+            id: &id,
+        }];
+        let request = Request::GetAssertion(credentials::GetAssertion {
+            rp_id: "example.com",
+            client_data_hash: &[0; 32],
+            allow_list: Some(&descriptors),
+            options: credentials::AssertionOptions {
+                user_presence: up,
+                ..Default::default()
+            },
+            auth: Default::default(),
+            hmac_secret: Some(extensions::HmacSecretInput {
+                key_agreement: &point,
+                salt_enc: &encrypted,
+                salt_auth: &tag,
+                protocol: Some(2),
+            }),
+        });
+        let mut out = [0xa5; 1023];
+        assert_eq!(
+            ready(authenticator::execute_with_session(
+                &mut repo,
+                request,
+                &mut Presence::default(),
+                &mut out,
+                &mut session,
+                0
+            )),
+            Err(expected)
+        );
+        assert_eq!(out, [0; 1023]);
+        assert_eq!(
+            ready(repo.read(&id, &sha256(b"example.com")))
+                .unwrap()
+                .unwrap()
+                .counter(),
+            0
+        );
+    }
+}
+
+#[test]
+fn hmac_secret_continuations_own_request_fields_and_use_each_accounts_seed() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let mut session = pin_session::Session::default();
+    for user in [b"one".as_slice(), b"two".as_slice()] {
+        ready(repo.create_discoverable_extended("example.com", user, None, None, None, 1, true))
+            .unwrap();
+    }
+    let (shared, point) = agreement(&mut repo, &mut session);
+    let first = {
+        let mut enc = [0; 48];
+        shared.encrypt(&mut rng(), &[77; 32], &mut enc).unwrap();
+        let mut tag = [0; 32];
+        shared.authenticate(&enc, &mut tag).unwrap();
+        let request = Request::GetAssertion(credentials::GetAssertion {
+            rp_id: "example.com",
+            client_data_hash: &[9; 32],
+            allow_list: None,
+            options: Default::default(),
+            auth: Default::default(),
+            hmac_secret: Some(extensions::HmacSecretInput {
+                key_agreement: &point,
+                salt_enc: &enc,
+                salt_auth: &tag,
+                protocol: Some(2),
+            }),
+        });
+        let mut out = [0; 1023];
+        let n = ready(authenticator::execute_with_session(
+            &mut repo,
+            request,
+            &mut Presence::default(),
+            &mut out,
+            &mut session,
+            0,
+        ))
+        .unwrap();
+        out[..n].to_vec()
+    };
+    let mut out = [0; 1023];
+    let n = ready(authenticator::execute_with_session(
+        &mut repo,
+        Request::GetNextAssertion,
+        &mut Presence::default(),
+        &mut out,
+        &mut session,
+        1,
+    ))
+    .unwrap();
+    for response in [&first[..], &out[..n]] {
+        let map = cbor::decode(response).unwrap();
+        let id = map
+            .get_int(1)
+            .unwrap()
+            .unwrap()
+            .get_text("id")
+            .unwrap()
+            .unwrap()
+            .bytes()
+            .unwrap();
+        let record = ready(repo.read(id, &sha256(b"example.com")))
+            .unwrap()
+            .unwrap();
+        let data = map.get_int(2).unwrap().unwrap().bytes().unwrap();
+        let encrypted = cbor::decode(&data[37..])
+            .unwrap()
+            .get_text("hmac-secret")
+            .unwrap()
+            .unwrap()
+            .bytes()
+            .unwrap();
+        let mut value = [0; 32];
+        shared.decrypt(encrypted, &mut value).unwrap();
+        assert_eq!(
+            value,
+            doohickey_crypto::ctap::hmac_sha256(&record.hmac_seeds().unwrap()[32..], &[77; 32])
+        );
+    }
+}
+
+#[test]
+fn management_user_id_and_capacity_errors_do_not_rekey_or_overwrite_labels() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut session = pin_session::Session::default();
+    let id = {
+        let mut repo = Repository::new(&mut store, &master, &mut random);
+        let record =
+            ready(repo.create_discoverable("example.com", b"user", Some("Original"), None, None))
+                .unwrap();
+        set_pin(&mut repo, &mut session, b"1234").unwrap();
+        *record.id()
+    };
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let grant = scoped_token(&mut repo, &mut session, b"1234", 0, 4, None).unwrap();
+    let mut params = vec![0xa2, 2];
+    params.extend(descriptor_bytes(&id));
+    params.extend(b"\x03\xa2\x62id\x45wrong\x64name\x63New");
+    assert_eq!(
+        session_call(
+            &mut repo,
+            &mut session,
+            &cm_wire(7, Some(&params), Some(&grant)),
+            0
+        ),
+        Err(Status::InvalidParameter)
+    );
+    let grant = scoped_token(&mut repo, &mut session, b"1234", 0, 4, None).unwrap();
+    let mut params = vec![0xa2, 2];
+    params.extend(descriptor_bytes(&id));
+    params.extend(b"\x03\xa2\x62id\x44user\x64name\x63New");
+    drop(repo);
+    store.full = true;
+    {
+        let mut repo = Repository::new(&mut store, &master, &mut random);
+        assert_eq!(
+            session_call(
+                &mut repo,
+                &mut session,
+                &cm_wire(7, Some(&params), Some(&grant)),
+                0
+            ),
+            Err(Status::KeyStoreFull)
+        );
+    }
+    store.full = false;
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    assert_eq!(
+        ready(repo.read(&id, &sha256(b"example.com")))
+            .unwrap()
+            .unwrap()
+            .name(),
+        Some("Original")
     );
 }

@@ -22,12 +22,48 @@ struct Token {
 }
 #[derive(Default)]
 pub struct Session {
+    pub(crate) management: Option<super::management::Continuation>,
     pub(crate) assertions: Option<super::authenticator::Continuation>,
     agreement: Option<PinUvKeyAgreement>,
     token: Option<Token>,
     failures: u8,
 }
 impl Session {
+    pub fn clear_management(&mut self) {
+        self.management = None;
+    }
+    pub fn agreement(&self) -> Option<&PinUvKeyAgreement> {
+        self.agreement.as_ref()
+    }
+    pub fn management_scope(&mut self, rp: Option<&[u8; 32]>, now: u64) -> Result<()> {
+        self.expire(now);
+        let token = self.token.as_ref().ok_or(Status::PinAuthInvalid)?;
+        if token.permissions & 4 == 0 || token.rp.is_some_and(|bound| rp != Some(&bound)) {
+            return Err(Status::PinAuthInvalid);
+        }
+        Ok(())
+    }
+    pub fn authorize_management(
+        &mut self,
+        auth: &AuthParameters<'_>,
+        message: &[u8],
+        now: u64,
+    ) -> Result<()> {
+        self.expire(now);
+        let param = auth.parameter.ok_or(Status::PinUvAuthTokenRequired)?;
+        let protocol = auth.protocol.ok_or(Status::MissingParameter)?;
+        if protocol != 2 {
+            return Err(Status::InvalidParameter);
+        }
+        let token = self.token.as_ref().ok_or(Status::PinAuthInvalid)?;
+        if token.permissions & 4 == 0
+            || param.len() != 32
+            || !bool::from(hmac_sha256(&token.key[..], message).ct_eq(param))
+        {
+            return Err(Status::PinAuthInvalid);
+        }
+        Ok(())
+    }
     pub fn grant_valid(&self, now: u64) -> bool {
         self.token.as_ref().is_some_and(|t| now < t.deadline)
     }
@@ -35,6 +71,7 @@ impl Session {
         self.assertions = None;
     }
     pub fn invalidate(&mut self) {
+        self.clear_management();
         self.clear_assertions();
         self.token = None;
         self.agreement = None;
@@ -42,6 +79,7 @@ impl Session {
     pub fn expire(&mut self, now: u64) {
         if self.token.as_ref().is_some_and(|t| now >= t.deadline) {
             self.token = None;
+            self.clear_management();
         }
     }
     pub async fn load<R: CryptoRngCore>(
@@ -154,7 +192,7 @@ impl Session {
                 protocol,
                 key_agreement,
                 pin_hash_enc,
-                permissions: pin_uv::Permissions::from_bits(3)?,
+                permissions: pin_uv::Permissions::from_bits(7)?,
                 rp_id: None,
             },
             other => other,
@@ -266,11 +304,14 @@ impl Session {
                 rp_id,
                 ..
             } => {
-                if permissions.bits() & !3 != 0 || permissions.bits() == 0 {
+                if permissions.bits() & !7 != 0 || permissions.bits() == 0 {
                     return Err(Status::UnauthorizedPermission);
                 }
-                let rp = rp_id.filter(|s| !s.is_empty());
-                if !legacy && rp.is_none() {
+                if rp_id.is_some_and(str::is_empty) {
+                    return Err(Status::InvalidParameter);
+                }
+                let rp = rp_id;
+                if !legacy && permissions.requires_rp_id() && rp.is_none() {
                     return Err(Status::MissingParameter);
                 }
                 let bytes = stored.as_mut().ok_or(Status::PinNotSet)?;

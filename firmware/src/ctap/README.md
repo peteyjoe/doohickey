@@ -11,7 +11,7 @@ and allow-list assertion flows, including packed self-attestation, encrypted
 persistence, durable signature counters and fresh physical button confirmation.
 It advertises FIDO_2_0 with UP, ES256, a 1024-byte limit, 8 list entries and
 60-byte credential IDs, dynamic clientPin, pinUvAuthToken and protocol [2]. Protocol-2 ClientPIN, PIN-based UV and discoverable credentials are implemented;
-credential management and extensions remain unavailable;
+PIN-authorized credential management, credProtect and hmac-secret are connected;
 TARGET_* constants describe the future CTAP 2.3 profile, not current capabilities.
 See [credential persistence and the update test](../../../docs/credential-milestone.md)
 for the operational profile, persistent format, limitations and test commands.
@@ -95,7 +95,8 @@ and entropy succeed; serial ctap_ready reflects that availability.
 ClientPIN implements protocol 2, persistent retries, scoped expiring RAM tokens
 and PIN-based UV; see [the PIN guide](../../../docs/client-pin.md). Discoverable credentials and getNextAssertion are implemented; see the
 [format and limits](../../../docs/discoverable-credentials.md). The target profile
-still needs credential management, extension integration and reset. It remains a development build,
+still needs reset, remaining conformance work and qualification. See
+[management and extension integration](../../../docs/credential-management-and-extensions.md). It remains a development build,
 not a full CTAP 2.3 implementation or compliance claim.
 
 Permissions::from_bits rejects zero, rejects defined permissions for absent
