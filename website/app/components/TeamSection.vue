@@ -25,9 +25,9 @@
 // add or change people here.
 // To use a photo, put the image in website/public/team/ and add photo: '/team/bryan.jpg'
 const members = [
-  { name: 'Bryan Ramirez', role: 'Front end' },
-  { name: 'Peter Forbes', role: 'Back end' },
-  { name: 'Joshua Klepinger', role: 'Full stack' },
+  { name: 'Bryan Ramirez', role: 'Front End' },
+  { name: 'Peter Forbes', role: 'Back End' },
+  { name: 'Joshua Klepinger', role: 'Full Stack' },
   { name: 'Isreal Estrada', role: '3D Artist' },
 ]
 

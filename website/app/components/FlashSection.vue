@@ -29,28 +29,22 @@
             </div>
           </li>
 
-          <!-- 2. choose firmware -->
+          <!-- 2. pick the firmware (served from the website, nothing to upload) -->
           <li class="step" :class="{ done: !!blocks }">
             <span class="num" aria-hidden="true">
               <svg v-if="blocks" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 4.8" /></svg>
               <template v-else>2</template>
             </span>
             <div class="body">
-              <h3>Choose firmware</h3>
-              <p>A .uf2 file, for example the one from your team's build.</p>
-              <!-- the whole box is a label, so clicking it opens the file picker -->
-              <label
-                class="drop"
-                :class="{ over: dragging, has: !!blocks }"
-                @dragover.prevent="dragging = true"
-                @dragleave="dragging = false"
-                @drop.prevent="onDrop"
-              >
-                <input class="sr" type="file" accept=".uf2" @change="onFile" />
-                <svg class="drop-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 17v2a1 1 0 001 1h14a1 1 0 001-1v-2" /></svg>
-                <span v-if="blocks" class="drop-text"><strong>{{ fileName }}</strong><small>{{ blocks.length }} blocks ready. Click to pick a different file.</small></span>
-                <span v-else class="drop-text"><strong>Drop a .uf2 file here</strong><small>or click to browse</small></span>
-              </label>
+              <h3>Choose your board</h3>
+              <p>Pick the flash size that matches your board. We provide the firmware.</p>
+              <div class="choices" role="radiogroup" aria-label="Flash size">
+                <label v-for="o in FIRMWARE" :key="o.id" class="choice" :class="{ on: choice === o.id, off: busy }">
+                  <input class="sr" type="radio" name="flash-size" :value="o.id" :checked="choice === o.id" :disabled="busy" @change="pick(o)" />
+                  <strong>{{ o.label }}</strong>
+                  <small>{{ o.note }}</small>
+                </label>
+              </div>
             </div>
           </li>
 
@@ -82,18 +76,24 @@
 </template>
 
 <script setup>
-// same flasher logic as before, now with a progress bar and drag and drop
+// the firmware files live in website/public/firmware/ and are downloaded when you pick one
+const FIRMWARE = [
+  { id: '4mb', label: '4 MB', note: '4 MB flash', file: '/firmware/doohickey-4mb.uf2' },
+  { id: '16mb', label: '16 MB', note: '16 MB flash', file: '/firmware/doohickey-16mb.uf2' },
+]
+
 const status = ref('')
 const tone = ref('idle') // idle, ok, busy or error: colors the status dot
 const chip = ref('')
-const fileName = ref('')
+const choice = ref('') // id of the selected firmware
 const progress = ref(0)
 const busy = ref(false)
-const dragging = ref(false)
+const loading = ref(false)
 // shallowRef because Vue's deep proxy can break native browser objects like USBDevice
 const device = shallowRef(null)
 const blocks = shallowRef(null)
-const ready = computed(() => !!device.value && !!blocks.value && !busy.value) // Flash needs both
+const ready = computed(() => !!device.value && !!blocks.value && !busy.value && !loading.value) // Flash needs both
+let pickToken = 0 // so a slow download of an earlier choice can't overwrite a newer one
 
 function say(text, t = 'idle') { status.value = text; tone.value = t }
 
@@ -109,21 +109,30 @@ async function connect() {
   }
 }
 
-async function loadFile(file) {
-  if (!file) return
+// download the chosen .uf2 from the site and parse it
+async function pick(opt) {
+  if (busy.value) return
+  const mine = ++pickToken
+  choice.value = opt.id
+  blocks.value = null
+  progress.value = 0
+  loading.value = true
+  say(`Loading ${opt.label} firmware...`, 'busy')
   try {
-    blocks.value = parseUf2(await file.arrayBuffer()) // from utils/uf2.js
-    fileName.value = file.name
-    progress.value = 0
-    say(`Loaded ${blocks.value.length} blocks from ${file.name}`, 'ok')
+    const res = await fetch(opt.file)
+    if (!res.ok) throw new Error(`Couldn't download the ${opt.label} firmware (${res.status}).`)
+    const parsed = parseUf2(await res.arrayBuffer()) // from utils/uf2.js
+    if (mine !== pickToken) return
+    blocks.value = parsed
+    say(`${opt.label} firmware ready (${parsed.length} blocks).`, 'ok')
   } catch (err) {
+    if (mine !== pickToken) return
     blocks.value = null
-    fileName.value = ''
     say(err.message, 'error')
+  } finally {
+    if (mine === pickToken) loading.value = false
   }
 }
-function onFile(e) { loadFile(e.target.files[0]) }
-function onDrop(e) { dragging.value = false; loadFile(e.dataTransfer.files[0]) }
 
 async function flash() {
   const pb = new Picoboot(device.value) // from utils/picoboot.js
@@ -177,16 +186,17 @@ async function flash() {
 .btn.ghost { background: transparent; color: var(--cream); }
 .btn.ghost:hover:not(:disabled) { background: var(--orange); color: var(--left); }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-.btn:focus-visible, .drop:focus-within { outline: 2px solid var(--cream); outline-offset: 3px; }
+.btn:focus-visible { outline: 2px solid var(--cream); outline-offset: 3px; }
 
-/* drop zone */
-.drop { display: flex; align-items: center; gap: 1rem; margin-top: 1rem; padding: 1.1rem 1.25rem; border: 1.5px dashed rgba(243, 223, 199, 0.28); border-radius: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; }
-.drop:hover, .drop.over { border-color: var(--orange); background: rgba(240, 100, 44, 0.06); }
-.drop.has { border-style: solid; border-color: rgba(240, 100, 44, 0.55); }
-.drop-icon { flex: none; color: var(--orange); }
-.drop-text { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
-.drop-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.95rem; font-weight: 500; color: var(--cream); }
-.drop-text small { font-size: 0.82rem; color: var(--muted); }
+/* firmware choice cards */
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-top: 1rem; }
+.choice { display: flex; flex-direction: column; gap: 0.15rem; padding: 1rem 1.1rem; border: 1.5px solid rgba(243, 223, 199, 0.22); border-radius: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; }
+.choice strong { font-size: 1.15rem; font-weight: 600; color: var(--cream); }
+.choice small { font-size: 0.82rem; color: var(--muted); }
+.choice:hover:not(.off) { border-color: var(--orange); }
+.choice.on { border-color: var(--orange); background: rgba(240, 100, 44, 0.08); }
+.choice.off { cursor: not-allowed; opacity: 0.6; }
+.choice:focus-within { outline: 2px solid var(--cream); outline-offset: 3px; }
 .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
 
 /* progress bar */
@@ -212,6 +222,6 @@ async function flash() {
   .status { padding: 0.9rem 1.25rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .num, .btn, .drop, .fill { transition: none; }
+  .num, .btn, .choice, .fill { transition: none; }
 }
 </style>
