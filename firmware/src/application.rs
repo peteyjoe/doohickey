@@ -169,6 +169,9 @@ pub async fn run(
                 session.invalidate();
                 epoch = exchange.epoch.get();
             }
+            if result.is_err() {
+                session.clear_assertions();
+            }
             exchange.complete(result, &output[..]);
             // Input contains account identifiers/encrypted PIN fields. Never log.
             use zeroize::Zeroize;

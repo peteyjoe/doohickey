@@ -1,5 +1,5 @@
-//! First operational profile: non-discoverable ES256, packed self-attestation,
-//! fresh UP, no PIN/UV/extensions. Authorization is never inferred from options.
+//! ES256 registration, discovery and assertion continuations with fresh UP
+//! and verified PIN grants. Authorization is never inferred from client options.
 use super::{
     Request, Result, Status,
     cbor::Encoder,
@@ -11,6 +11,15 @@ use crate::storage::credentials::{self as repository, Credential, Repository};
 use doohickey_crypto::ctap::sha256;
 use rand_core::CryptoRngCore;
 use zeroize::{Zeroize, Zeroizing};
+pub(crate) struct Continuation {
+    ids: repository::Discovery,
+    next: usize,
+    rp: [u8; 32],
+    hash: Zeroizing<[u8; 32]>,
+    verified: bool,
+    up: bool,
+    deadline: u64,
+}
 const _: () = assert!(repository::ID_SIZE == 60);
 
 #[allow(async_fn_in_trait)]
@@ -69,6 +78,9 @@ pub async fn execute_with_session<R: CryptoRngCore>(
     now: u64,
 ) -> Result<usize> {
     output.zeroize();
+    if !matches!(request, Request::GetNextAssertion) {
+        session.clear_assertions();
+    }
     let result = async {
         check_cancel(presence)?;
         let configured = session.load(repository).await?.is_some();
@@ -121,7 +133,10 @@ pub async fn execute_with_session<R: CryptoRngCore>(
                     now,
                 )?;
                 {
-                    let result = assertion(repository, request, presence, output, verified).await;
+                    let result = assertion(
+                        repository, request, presence, output, verified, session, now,
+                    )
+                    .await;
                     let expired = verified && !session.grant_valid(presence.now_ms());
                     session.consume();
                     if expired {
@@ -132,7 +147,9 @@ pub async fn execute_with_session<R: CryptoRngCore>(
                 }
             }
             Request::GetInfo => super::info::encode_with_pin(output, configured),
-            Request::GetNextAssertion => Err(Status::NotAllowed),
+            Request::GetNextAssertion => {
+                next_assertion(repository, presence, output, session, now).await
+            }
             // Reset/PIN/management must not acquire provisional success paths.
             _ => Err(Status::InvalidCommand),
         }
@@ -140,6 +157,7 @@ pub async fn execute_with_session<R: CryptoRngCore>(
     .await;
     if result.is_err() {
         session.consume();
+        session.clear_assertions();
         output.zeroize();
     }
     result
@@ -157,9 +175,6 @@ async fn make<R: CryptoRngCore>(
         || !request.options.user_presence
     {
         return Err(Status::InvalidOption);
-    }
-    if request.options.resident_key {
-        return Err(Status::UnsupportedOption);
     }
     if request.enterprise_attestation.is_some() {
         return Err(Status::InvalidParameter);
@@ -188,7 +203,19 @@ async fn make<R: CryptoRngCore>(
     }
     presence.confirm().await?;
     check_cancel(presence)?;
-    let credential = repository.create(&rp_hash, request.user.id).await?;
+    let credential = if request.options.resident_key {
+        repository
+            .create_discoverable(
+                request.rp.id,
+                request.user.id,
+                request.user.name,
+                request.user.display_name,
+                request.rp.name,
+            )
+            .await?
+    } else {
+        repository.create(&rp_hash, request.user.id).await?
+    };
     check_cancel(presence)?;
     let mut auth_data = [0; 256];
     auth_data[..32].copy_from_slice(&rp_hash);
@@ -256,6 +283,8 @@ async fn assertion<R: CryptoRngCore>(
     presence: &mut impl Presence,
     output: &mut [u8],
     verified: bool,
+    session: &mut Session,
+    now: u64,
 ) -> Result<usize> {
     if request.options.user_verification == Some(true) && !verified {
         return Err(Status::InvalidOption);
@@ -266,43 +295,119 @@ async fn assertion<R: CryptoRngCore>(
     if request.rp_id.is_empty() || request.allow_list.is_some_and(|list| list.is_empty()) {
         return Err(Status::InvalidParameter);
     }
-    if output.len() < 256 {
-        return Err(Status::Other);
-    }
-    let Some(list) = request.allow_list else {
-        return Err(Status::NoCredentials);
-    };
     let rp_hash = sha256(request.rp_id.as_bytes());
-    let mut selected = None;
-    for descriptor in list {
-        if descriptor.credential_type == "public-key"
-            && let Some(credential) = repository.read(descriptor.id, &rp_hash).await?
-        {
-            selected = Some(credential);
-            break;
+    let mut candidates = repository::Discovery::default();
+    let discovery = request.allow_list.is_none();
+    if let Some(list) = request.allow_list {
+        for descriptor in list {
+            if descriptor.credential_type == "public-key"
+                && repository.read(descriptor.id, &rp_hash).await?.is_some()
+            {
+                candidates.ids[0].copy_from_slice(descriptor.id);
+                candidates.len = 1;
+                break;
+            }
         }
+    } else {
+        candidates = repository.discover(&rp_hash).await?;
     }
-    let mut credential = selected.ok_or(Status::NoCredentials)?;
+    if candidates.len == 0 {
+        return Err(Status::NoCredentials);
+    }
     check_cancel(presence)?;
     if request.options.user_presence {
         presence.confirm().await?;
     }
     check_cancel(presence)?;
-    let counter = repository.advance_counter(&mut credential).await?;
-    check_cancel(presence)?;
-    let mut auth_data = [0; 37];
-    auth_data[..32].copy_from_slice(&rp_hash);
-    auth_data[32] = u8::from(request.options.user_presence) | if verified { 4 } else { 0 };
-    auth_data[33..].copy_from_slice(&counter.to_be_bytes());
-    let mut signature = Zeroizing::new([0; 72]);
-    let signature_len = sign(
-        &credential,
-        &auth_data,
+    let mut credential = repository
+        .read(&candidates.ids[0], &rp_hash)
+        .await?
+        .ok_or(Status::IntegrityFailure)?;
+    let result = assertion_response(
+        repository,
+        &mut credential,
         request.client_data_hash,
-        &mut signature[..],
-    )?;
+        verified,
+        request.options.user_presence,
+        discovery,
+        (discovery && candidates.len > 1).then_some(candidates.len),
+        presence,
+        output,
+    )
+    .await?;
+    if discovery && candidates.len > 1 {
+        session.assertions = Some(Continuation {
+            ids: candidates,
+            next: 1,
+            rp: rp_hash,
+            hash: Zeroizing::new(*request.client_data_hash),
+            verified,
+            up: request.options.user_presence,
+            deadline: now.max(presence.now_ms()).saturating_add(30_000),
+        });
+    }
+    Ok(result)
+}
+async fn next_assertion<R: CryptoRngCore>(
+    repository: &mut Repository<'_, '_, '_, '_, R>,
+    presence: &impl Presence,
+    output: &mut [u8],
+    session: &mut Session,
+    now: u64,
+) -> Result<usize> {
+    let mut state = session.assertions.take().ok_or(Status::NotAllowed)?;
+    if now >= state.deadline || presence.now_ms() >= state.deadline || state.next >= state.ids.len {
+        return Err(Status::NotAllowed);
+    }
+    let mut credential = repository
+        .read(&state.ids.ids[state.next], &state.rp)
+        .await?
+        .ok_or(Status::IntegrityFailure)?;
+    let n = assertion_response(
+        repository,
+        &mut credential,
+        &state.hash,
+        state.verified,
+        state.up,
+        true,
+        None,
+        presence,
+        output,
+    )
+    .await?;
+    state.next += 1;
+    state.deadline = now.max(presence.now_ms()).saturating_add(30_000);
+    if state.next < state.ids.len {
+        session.assertions = Some(state);
+    }
+    Ok(n)
+}
+#[allow(clippy::too_many_arguments)]
+async fn assertion_response<R: CryptoRngCore>(
+    repository: &mut Repository<'_, '_, '_, '_, R>,
+    credential: &mut Credential,
+    hash: &[u8; 32],
+    verified: bool,
+    up: bool,
+    user: bool,
+    count: Option<usize>,
+    presence: &impl Presence,
+    output: &mut [u8],
+) -> Result<usize> {
+    if output.len() < if user { 512 } else { 256 } {
+        return Err(Status::Other);
+    }
+    check_cancel(presence)?;
+    let counter = repository.advance_counter(credential).await?;
+    check_cancel(presence)?;
+    let mut auth = [0; 37];
+    auth[..32].copy_from_slice(credential.rp_id_hash());
+    auth[32] = u8::from(up) | if verified { 4 } else { 0 };
+    auth[33..].copy_from_slice(&counter.to_be_bytes());
+    let mut signature = Zeroizing::new([0; 72]);
+    let n = sign(credential, &auth, hash, &mut signature[..])?;
     let mut e = Encoder::new(output);
-    e.map(3)?;
+    e.map(3 + usize::from(user) + usize::from(count.is_some()))?;
     e.unsigned(1)?;
     e.map(2)?;
     e.text("id")?;
@@ -310,10 +415,28 @@ async fn assertion<R: CryptoRngCore>(
     e.text("type")?;
     e.text("public-key")?;
     e.unsigned(2)?;
-    e.bytes(&auth_data)?;
+    e.bytes(&auth)?;
     e.unsigned(3)?;
-    e.bytes(&signature[..signature_len])?;
-    // Non-discoverable allow-list response: no user names/handles, no count,
-    // no continuation and no assertion of UV or unsupported extension outputs.
+    e.bytes(&signature[..n])?;
+    if user {
+        let name = verified.then(|| credential.name()).flatten();
+        let display = verified.then(|| credential.display_name()).flatten();
+        e.unsigned(4)?;
+        e.map(1 + usize::from(name.is_some()) + usize::from(display.is_some()))?;
+        e.text("id")?;
+        e.bytes(credential.user_id())?;
+        if let Some(name) = name {
+            e.text("name")?;
+            e.text(name)?;
+        }
+        if let Some(display) = display {
+            e.text("displayName")?;
+            e.text(display)?;
+        }
+    }
+    if let Some(count) = count {
+        e.unsigned(5)?;
+        e.unsigned(count as u64)?;
+    }
     Ok(e.len())
 }

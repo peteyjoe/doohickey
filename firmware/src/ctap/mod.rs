@@ -1,9 +1,9 @@
 //! Transport-independent CTAP 2.3 foundation for an ES256, discoverable-key,
 //! ClientPIN authenticator. See README.md for implemented scope and integration.
 //!
-//! Bounded decoding and the non-discoverable ES256 registration/assertion
-//! profile are implemented. PIN/UV, discovery and the full CTAP 2.3 profile
-//! remain targets; advertise only the behavior actually connected to USB.
+//! Bounded decoding, PIN/UV and discoverable ES256 credentials are connected.
+//! Management, extensions and the full CTAP 2.3 profile remain targets;
+//! advertise only behavior actually connected to USB.
 
 #[cfg(target_os = "none")]
 pub mod authenticator;

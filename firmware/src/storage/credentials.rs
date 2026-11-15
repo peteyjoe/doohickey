@@ -1,5 +1,5 @@
-//! Encrypted, non-discoverable ES256 credential records. One key per record;
-//! no directory/index transaction. Await each mutation through readback.
+//! Encrypted ES256 credentials with backward-compatible legacy records and
+//! committed discoverable directories. Await each mutation through readback.
 use super::{
     Storage,
     encrypted::{self, EncryptedStorage, RecordKind},
@@ -14,6 +14,23 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub const ID_SIZE: usize = 60;
 pub const RECORD_SIZE: usize = 202;
+const CAPACITY: usize = 660;
+pub const MAX_DISCOVERABLE: usize = 14;
+const CATALOG_SIZE: usize = 25 + MAX_DISCOVERABLE * ID_SIZE;
+const RESIDENT_MAGIC: &[u8; 8] = b"DOOHCR02";
+const CATALOG_MAGIC: &[u8; 8] = b"DOOHRK01";
+pub struct Discovery {
+    pub ids: Zeroizing<[[u8; ID_SIZE]; MAX_DISCOVERABLE]>,
+    pub len: usize,
+}
+impl Default for Discovery {
+    fn default() -> Self {
+        Self {
+            ids: Zeroizing::new([[0; ID_SIZE]; MAX_DISCOVERABLE]),
+            len: 0,
+        }
+    }
+}
 pub const KEY_PREFIX: u32 = 0x0100_0000;
 const RECORD_MAGIC: &[u8; 8] = b"DOOHCR01";
 const ID_MAGIC: &[u8; 8] = b"DOOHCID1";
@@ -39,8 +56,19 @@ fn map_error(error: encrypted::Error) -> Error {
 }
 
 /// Secret-bearing value: no Debug/Clone, including the retained user handle.
-pub struct Credential(Zeroizing<[u8; RECORD_SIZE]>);
+pub struct Credential(Zeroizing<[u8; CAPACITY]>);
 impl Credential {
+    pub fn discoverable(&self) -> bool {
+        &self.0[..8] == RESIDENT_MAGIC
+    }
+    pub fn name(&self) -> Option<&str> {
+        (self.0[202] != 0)
+            .then(|| core::str::from_utf8(&self.0[203..203 + usize::from(self.0[202])]).unwrap())
+    }
+    pub fn display_name(&self) -> Option<&str> {
+        (self.0[267] != 0)
+            .then(|| core::str::from_utf8(&self.0[268..268 + usize::from(self.0[267])]).unwrap())
+    }
     pub fn id(&self) -> &[u8; ID_SIZE] {
         self.0[9..69].try_into().unwrap()
     }
@@ -74,6 +102,150 @@ pub struct Repository<'s, 'd, 'k, 'r, R: CryptoRngCore> {
     id_key: Zeroizing<[u8; 32]>,
 }
 impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
+    async fn catalog(
+        &mut self,
+        rp: &[u8; 32],
+    ) -> Result<Option<Zeroizing<[u8; CATALOG_SIZE]>>, Error> {
+        let mut bytes = Zeroizing::new([0; CATALOG_SIZE]);
+        let n = EncryptedStorage::new(self.storage, self.key, self.rng)
+            .read(
+                0x0300_0000 | u32::from(rp[0]),
+                RecordKind::Configuration,
+                &mut bytes[..],
+            )
+            .await
+            .map_err(map_error)?;
+        let Some(n) = n else {
+            return Ok(None);
+        };
+        let count = usize::from(bytes[24]);
+        if n != CATALOG_SIZE
+            || &bytes[..8] != CATALOG_MAGIC
+            || count > MAX_DISCOVERABLE
+            || bytes[25 + count * ID_SIZE..].iter().any(|b| *b != 0)
+        {
+            return Err(Error::Integrity);
+        }
+        for i in 0..count {
+            let id = &bytes[25 + i * ID_SIZE..25 + (i + 1) * ID_SIZE];
+            if &id[..8] != ID_MAGIC
+                || id[11] != 1
+                || (0..i).any(|j| &bytes[25 + j * ID_SIZE..25 + (j + 1) * ID_SIZE] == id)
+            {
+                return Err(Error::Integrity);
+            }
+        }
+        Ok(Some(bytes))
+    }
+    async fn write_catalog(
+        &mut self,
+        rp: &[u8; 32],
+        bytes: &mut [u8; CATALOG_SIZE],
+    ) -> Result<(), Error> {
+        self.rng
+            .try_fill_bytes(&mut bytes[8..24])
+            .map_err(|_| Error::Entropy)?;
+        EncryptedStorage::new(self.storage, self.key, self.rng)
+            .store(
+                0x0300_0000 | u32::from(rp[0]),
+                RecordKind::Configuration,
+                bytes,
+            )
+            .await
+            .map_err(map_error)?;
+        let readback = self.catalog(rp).await?.ok_or(Error::Integrity)?;
+        if !bool::from(readback[..].ct_eq(bytes)) {
+            return Err(Error::Integrity);
+        }
+        Ok(())
+    }
+    /// Directory order is commit/creation order. Return RP matches newest first.
+    pub async fn discover(&mut self, rp: &[u8; 32]) -> Result<Discovery, Error> {
+        let mut result = Discovery::default();
+        let Some(catalog) = self.catalog(rp).await? else {
+            return Ok(result);
+        };
+        for i in (0..usize::from(catalog[24])).rev() {
+            let id = &catalog[25 + i * ID_SIZE..25 + (i + 1) * ID_SIZE];
+            let address = u32::from_le_bytes(id[8..12].try_into().unwrap());
+            let record = self.load_at(address).await?.ok_or(Error::Integrity)?;
+            if !record.discoverable()
+                || record.0[8] != 2
+                || record.rp_id_hash()[0] != rp[0]
+                || record.id().as_slice() != id
+            {
+                return Err(Error::Integrity);
+            }
+            if bool::from(record.rp_id_hash().ct_eq(rp)) {
+                result.ids[result.len].copy_from_slice(id);
+                result.len += 1;
+            }
+        }
+        Ok(result)
+    }
+    /// The directory is the commit point. New data is written first; replacing
+    /// a user atomically removes its old ID from both discovery and allow lists.
+    pub async fn create_discoverable(
+        &mut self,
+        rp: &str,
+        user: &[u8],
+        name: Option<&str>,
+        display: Option<&str>,
+        rp_name: Option<&str>,
+    ) -> Result<Credential, Error> {
+        if rp.is_empty() || rp.len() > 253 {
+            return Err(Error::InvalidUser);
+        }
+        let hash = sha256_local(rp.as_bytes());
+        let matches = self.discover(&hash).await?;
+        let mut previous = None;
+        for id in &matches.ids[..matches.len] {
+            let record = self.read(id, &hash).await?.ok_or(Error::Integrity)?;
+            if record.user_id() == user {
+                previous = Some(*id);
+                break;
+            }
+        }
+        let mut catalog = self.catalog(&hash).await?.unwrap_or_else(|| {
+            let mut bytes = Zeroizing::new([0; CATALOG_SIZE]);
+            bytes[..8].copy_from_slice(CATALOG_MAGIC);
+            bytes
+        });
+        let mut count = usize::from(catalog[24]);
+        if let Some(id) = previous {
+            let index = (0..count)
+                .find(|i| catalog[25 + i * ID_SIZE..25 + (i + 1) * ID_SIZE] == id)
+                .ok_or(Error::Integrity)?;
+            catalog.copy_within(
+                25 + (index + 1) * ID_SIZE..25 + count * ID_SIZE,
+                25 + index * ID_SIZE,
+            );
+            count -= 1;
+            catalog[25 + count * ID_SIZE..].zeroize();
+        } else if count == MAX_DISCOVERABLE {
+            return Err(Error::Full);
+        }
+        let mut record = self.create(&hash, user).await?;
+        record.0[..8].copy_from_slice(RESIDENT_MAGIC);
+        record.0[8] = 2;
+        for (text, length, start) in [(name, 202, 203), (display, 267, 268), (rp_name, 587, 588)] {
+            if let Some(text) = text {
+                let mut len = text.len().min(64);
+                while !text.is_char_boundary(len) {
+                    len -= 1;
+                }
+                record.0[length] = len as u8;
+                record.0[start..start + len].copy_from_slice(&text.as_bytes()[..len]);
+            }
+        }
+        record.0[332..334].copy_from_slice(&(rp.len() as u16).to_le_bytes());
+        record.0[334..334 + rp.len()].copy_from_slice(rp.as_bytes());
+        self.persist(&record).await?;
+        catalog[25 + count * ID_SIZE..25 + (count + 1) * ID_SIZE].copy_from_slice(record.id());
+        catalog[24] = (count + 1) as u8;
+        self.write_catalog(&hash, &mut catalog).await?;
+        Ok(record)
+    }
     pub(crate) fn rng(&mut self) -> &mut R {
         self.rng
     }
@@ -133,7 +305,7 @@ impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
         Some(address)
     }
     async fn load_at(&mut self, address: u32) -> Result<Option<Credential>, Error> {
-        let mut bytes = Zeroizing::new([0; RECORD_SIZE]);
+        let mut bytes = Zeroizing::new([0; CAPACITY]);
         let Some(n) = EncryptedStorage::new(self.storage, self.key, self.rng)
             .read(address, RecordKind::Credential, &mut bytes[..])
             .await
@@ -141,15 +313,39 @@ impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
         else {
             return Ok(None);
         };
-        if n != RECORD_SIZE
-            || &bytes[..8] != RECORD_MAGIC
-            || bytes[8] > 1
+        let resident = n == CAPACITY && &bytes[..8] == RESIDENT_MAGIC;
+        if !(n == RECORD_SIZE && &bytes[..8] == RECORD_MAGIC || resident)
+            || !matches!(bytes[8], 0..=2)
+            || (bytes[8] == 2) != (resident && bytes[8] != 0)
             || self.address(&bytes[9..69], bytes[69..101].try_into().unwrap()) != Some(address)
         {
             return Err(Error::Integrity);
         }
         let record = Credential(bytes);
-        if record.0[8] == 1 {
+        if record.0[8] != 0 {
+            if resident {
+                for (length, start) in [(202, 203), (267, 268), (587, 588)] {
+                    let len = usize::from(record.0[length]);
+                    if len > 64
+                        || core::str::from_utf8(&record.0[start..start + len]).is_err()
+                        || record.0[start + len..start + 64].iter().any(|b| *b != 0)
+                    {
+                        return Err(Error::Integrity);
+                    }
+                }
+                let len = u16::from_le_bytes(record.0[332..334].try_into().unwrap()) as usize;
+                if len == 0
+                    || len > 253
+                    || core::str::from_utf8(&record.0[334..334 + len]).is_err()
+                    || !bool::from(
+                        sha256_local(&record.0[334..334 + len]).ct_eq(record.rp_id_hash()),
+                    )
+                    || record.0[334 + len..587].iter().any(|b| *b != 0)
+                    || record.0[652..].iter().any(|b| *b != 0)
+                {
+                    return Err(Error::Integrity);
+                }
+            }
             if record.0[101] == 0
                 || record.0[101] > 64
                 || record.0[102 + usize::from(record.0[101])..166]
@@ -169,7 +365,15 @@ impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
             .address(credential.id(), credential.rp_id_hash())
             .ok_or(Error::Integrity)?;
         EncryptedStorage::new(self.storage, self.key, self.rng)
-            .store(address, RecordKind::Credential, &credential.0[..])
+            .store(
+                address,
+                RecordKind::Credential,
+                &credential.0[..if credential.discoverable() {
+                    CAPACITY
+                } else {
+                    RECORD_SIZE
+                }],
+            )
             .await
             .map_err(map_error)?;
         let readback = self.load_at(address).await?.ok_or(Error::Integrity)?;
@@ -190,6 +394,17 @@ impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
         }
         if record.0[8] == 0 {
             return Ok(None);
+        }
+        if record.discoverable() {
+            let catalog = self.catalog(rp).await?.ok_or(Error::Integrity)?;
+            if !catalog[25..25 + usize::from(catalog[24]) * ID_SIZE]
+                .as_chunks::<ID_SIZE>()
+                .0
+                .iter()
+                .any(|entry| entry == id)
+            {
+                return Ok(None);
+            }
         }
         Ok(Some(record))
     }
@@ -223,7 +438,7 @@ impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
             if self.load_at(address).await?.is_some() {
                 continue;
             }
-            let mut record = Credential(Zeroizing::new([0; RECORD_SIZE]));
+            let mut record = Credential(Zeroizing::new([0; CAPACITY]));
             record.0[..8].copy_from_slice(RECORD_MAGIC);
             record.0[8] = 1;
             record.0[9..17].copy_from_slice(ID_MAGIC);
@@ -271,6 +486,9 @@ impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
             return Err(Error::InvalidUser);
         }
         let mut record = self.read(id, rp).await?.ok_or(Error::NotFound)?;
+        if record.discoverable() && record.user_id() != user {
+            return Err(Error::InvalidUser);
+        }
         record.0[101..166].zeroize();
         record.0[101] = user.len() as u8;
         record.0[102..102 + user.len()].copy_from_slice(user);
@@ -282,9 +500,27 @@ impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
         let Some(mut record) = self.read(id, rp).await? else {
             return Ok(false);
         };
+        if record.discoverable() {
+            let mut catalog = self.catalog(rp).await?.ok_or(Error::Integrity)?;
+            let count = usize::from(catalog[24]);
+            let position = (0..count)
+                .find(|i| &catalog[25 + i * ID_SIZE..25 + (i + 1) * ID_SIZE] == id)
+                .ok_or(Error::Integrity)?;
+            catalog.copy_within(
+                25 + (position + 1) * ID_SIZE..25 + count * ID_SIZE,
+                25 + position * ID_SIZE,
+            );
+            catalog[25 + (count - 1) * ID_SIZE..].zeroize();
+            catalog[24] -= 1;
+            self.write_catalog(rp, &mut catalog).await?;
+        }
         record.0[8] = 0;
         record.0[101..198].zeroize();
         self.persist(&record).await?;
         Ok(true)
     }
+}
+
+fn sha256_local(bytes: &[u8]) -> [u8; 32] {
+    doohickey_crypto::ctap::sha256(bytes)
 }

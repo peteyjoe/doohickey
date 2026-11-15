@@ -4,8 +4,9 @@ The firmware implements a development FIDO_2_0 profile: ES256 non-discoverable
 credentials, packed self-attestation, allow-list assertions and physical user
 presence. This supports a registration/login flow with user verification
 discouraged and resident keys discouraged. It is not the final CTAP 2.3 profile
-or a certified authenticator. Discoverable credentials, credential management, reset and extensions remain
-unadvertised/unavailable. [ClientPIN and PIN-based UV](client-pin.md) are now
+or a certified authenticator. Credential management, reset and extensions remain unadvertised/unavailable.
+[Discoverable credentials](discoverable-credentials.md) are implemented; the guide
+below still describes the saved allow-list fixture flow. [ClientPIN and PIN-based UV](client-pin.md) are now
 implemented; use `--pin` with the credential tool once a PIN is set.
 
 `application.rs` owns initialization, flash, the TRNG-seeded CSPRNG, and GPIOs.
@@ -31,7 +32,7 @@ key is the replaceable credential key from initialized state, not the OTP root.
 No key material or account values have Debug/Clone implementations.
 
 The allocated namespace is `0x01000000..=0x01ffffff`. Other application modules
-must not use it. One record uses a 202-byte plaintext / 243-byte envelope plus
+must not use it. A non-discoverable record uses a 202-byte plaintext / 243-byte envelope plus
 the underlying map overhead. Capacity follows the selected storage partition;
 there is no fixed credential-count limit that differs between firmware variants.
 Random address collisions are checked without overwriting records.
@@ -61,7 +62,9 @@ Assertions persist the next counter before exposing a signature. A failed
 acknowledgement may skip a count; overflow is an error. Deletion clears the
 user/key fields and persists an authenticated tombstone; addresses are never
 reused. An interrupted creation can leave an unpublished credential consuming
-space. There is no directory transaction to repair or enumeration API yet.
+space. Discoverable records additionally use the directory commit described in the
+[discoverable credential guide](discoverable-credentials.md); management
+enumeration commands remain unimplemented.
 Old encrypted flash values remain: logical deletion is not secure erasure,
 and neither the repository nor the map prevents rollback of a valid snapshot.
 

@@ -1,5 +1,5 @@
 //! Development discovery and operational ES256 profiles. Neither advertises
-//! unfinished PIN/UV, discoverability, extensions or CTAP 2.3 conformance.
+//! unfinished management, extensions or CTAP 2.3 conformance.
 use super::{Result, cbor::Encoder};
 use zeroize::Zeroize;
 
@@ -36,7 +36,7 @@ fn encode_profile(output: &mut [u8], operational: bool, pin: Option<bool>) -> Re
         e.unsigned(4)?;
         e.map(if pin.is_some() { 5 } else { 3 })?;
         e.text("rk")?;
-        e.boolean(false)?;
+        e.boolean(pin.is_some())?;
         e.text("up")?;
         e.boolean(operational)?;
         e.text("plat")?;

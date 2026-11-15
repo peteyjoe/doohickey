@@ -659,7 +659,6 @@ fn unsupported_options_are_errors_and_storage_failures_never_become_no_credentia
     for (suffix, status) in [
         (b"\x07\xa1\x62uv\xf5".as_slice(), Status::InvalidOption),
         (b"\x07\xa1\x62up\xf4".as_slice(), Status::InvalidOption),
-        (b"\x07\xa1\x62rk\xf5".as_slice(), Status::UnsupportedOption),
         (b"\x08\x40".as_slice(), Status::PinNotSet),
     ] {
         let mut msg = make_wire();
@@ -898,4 +897,342 @@ fn client_pin_policy_and_uncertain_retry_writes_fail_closed() {
             if after { 7 } else { 8 }
         );
     }
+}
+
+#[test]
+fn discoverable_reconstruction_replacement_deletion_and_legacy_compatibility() {
+    let mut store = storage::Storage::default();
+    let (legacy, public) = fixture(&mut store);
+    let master = key();
+    let mut random = rng();
+    let rp = sha256(b"example.com");
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let first = ready(repo.create_discoverable(
+        "example.com",
+        b"one",
+        Some("Account"),
+        Some("Display"),
+        Some("Example"),
+    ))
+    .unwrap();
+    let first_id = *first.id();
+    let second = ready(repo.create_discoverable("example.com", b"two", None, None, None)).unwrap();
+    let second_id = *second.id();
+    drop(repo);
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let found = ready(repo.discover(&rp)).unwrap();
+    assert_eq!(found.len, 2);
+    assert_eq!(found.ids[0], second_id);
+    assert_eq!(found.ids[1], first_id);
+    assert_eq!(
+        ready(repo.read(&legacy, &rp))
+            .unwrap()
+            .unwrap()
+            .public_key()
+            .unwrap(),
+        public
+    );
+    let replacement = ready(repo.create_discoverable(
+        "example.com",
+        b"one",
+        Some("New"),
+        Some("Display new"),
+        None,
+    ))
+    .unwrap();
+    assert_ne!(replacement.id(), &first_id);
+    assert!(ready(repo.read(&first_id, &rp)).unwrap().is_none());
+    assert_eq!(ready(repo.discover(&rp)).unwrap().len, 2);
+    assert!(ready(repo.discover(&sha256(b"other.test"))).unwrap().len == 0);
+    assert_eq!(ready(repo.delete(replacement.id(), &rp)), Ok(true));
+    assert!(ready(repo.read(replacement.id(), &rp)).unwrap().is_none());
+    assert_eq!(ready(repo.discover(&rp)).unwrap().len, 1);
+}
+#[test]
+fn discoverable_directory_commit_faults_preserve_old_or_new_account() {
+    let master = key();
+    let rp = sha256(b"example.com");
+    for step in 1..=3 {
+        for after in [false, true] {
+            let mut store = storage::Storage::default();
+            let mut random = rng();
+            let old = {
+                let mut repo = Repository::new(&mut store, &master, &mut random);
+                *ready(repo.create_discoverable("example.com", b"user", None, None, None))
+                    .unwrap()
+                    .id()
+            };
+            store.fail_at = Some(store.writes + step);
+            store.fail_before = !after;
+            store.fail_after = after;
+            {
+                let mut repo = Repository::new(&mut store, &master, &mut random);
+                assert!(
+                    ready(repo.create_discoverable(
+                        "example.com",
+                        b"user",
+                        Some("New"),
+                        None,
+                        None
+                    ))
+                    .is_err()
+                );
+            }
+            store.fail_before = false;
+            store.fail_after = false;
+            store.fail_at = None;
+            let mut repo = Repository::new(&mut store, &master, &mut random);
+            let found = ready(repo.discover(&rp)).unwrap();
+            assert_eq!(found.len, 1);
+            let current = ready(repo.read(&found.ids[0], &rp)).unwrap().unwrap();
+            assert_eq!(current.user_id(), b"user");
+            assert_eq!(
+                ready(repo.read(&old, &rp)).unwrap().is_none(),
+                step == 3 && after
+            );
+        }
+    }
+}
+#[test]
+fn discoverable_capacity_corruption_and_utf8_are_bounded() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let rp = sha256(b"example.com");
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let name = "🦀".repeat(30);
+    let first =
+        ready(repo.create_discoverable("example.com", &[0], Some(&name), None, None)).unwrap();
+    assert_eq!(first.name().unwrap().len(), 64);
+    let id = *first.id();
+    for i in 1..storage::credentials::MAX_DISCOVERABLE {
+        ready(repo.create_discoverable("example.com", &[i as u8], None, None, None)).unwrap();
+    }
+    assert!(matches!(
+        ready(repo.create_discoverable("example.com", b"full", None, None, None)),
+        Err(Error::Full)
+    ));
+    ready(repo.create_discoverable("example.com", &[0], Some("Replacement"), None, None)).unwrap();
+    assert!(ready(repo.read(&id, &rp)).unwrap().is_none());
+    drop(repo);
+    let address = 0x0300_0000 | u32::from(rp[0]);
+    store.values.get_mut(&address).unwrap()[20] ^= 1;
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    assert!(matches!(ready(repo.discover(&rp)), Err(Error::Integrity)));
+}
+fn discovery_call(
+    repo: &mut Repository<'_, '_, '_, '_, ChaCha20Rng>,
+    session: &mut pin_session::Session,
+    now: u64,
+    verified: bool,
+) -> Vec<u8> {
+    let hash = [9; 32];
+    let tag = if verified {
+        Some(doohickey_crypto::ctap::hmac_sha256(
+            &token(repo, session, b"1234", now).unwrap(),
+            &hash,
+        ))
+    } else {
+        None
+    };
+    let request = Request::GetAssertion(credentials::GetAssertion {
+        rp_id: "example.com",
+        client_data_hash: &hash,
+        allow_list: None,
+        options: credentials::AssertionOptions::default(),
+        auth: pin_uv::AuthParameters {
+            protocol: tag.as_ref().map(|_| 2),
+            parameter: tag.as_ref().map(|t| t.as_slice()),
+        },
+        hmac_secret: None,
+    });
+    let mut out = [0; 1023];
+    let n = ready(authenticator::execute_with_session(
+        repo,
+        request,
+        &mut Presence::default(),
+        &mut out,
+        session,
+        now,
+    ))
+    .unwrap();
+    out[..n].to_vec()
+}
+#[test]
+fn discoverable_assertions_continuations_privacy_timeout_and_invalidation() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let mut session = pin_session::Session::default();
+    for user in [b"first".as_slice(), b"second".as_slice()] {
+        ready(repo.create_discoverable("example.com", user, Some("Name"), Some("Display"), None))
+            .unwrap();
+    }
+    let response = discovery_call(&mut repo, &mut session, 0, false);
+    let map = cbor::decode(&response).unwrap();
+    assert_eq!(map.get_int(5).unwrap().unwrap().unsigned().unwrap(), 2);
+    let user = map.get_int(4).unwrap().unwrap();
+    assert_eq!(
+        user.get_text("id").unwrap().unwrap().bytes().unwrap(),
+        b"second"
+    );
+    assert!(user.get_text("name").unwrap().is_none());
+    let mut presence = Presence::default();
+    let mut out = [0; 1023];
+    let n = ready(authenticator::execute_with_session(
+        &mut repo,
+        Request::GetNextAssertion,
+        &mut presence,
+        &mut out,
+        &mut session,
+        1,
+    ))
+    .unwrap();
+    assert_eq!(presence.calls, 0);
+    let map = cbor::decode(&out[..n]).unwrap();
+    assert!(map.get_int(5).unwrap().is_none());
+    assert_eq!(
+        map.get_int(4)
+            .unwrap()
+            .unwrap()
+            .get_text("id")
+            .unwrap()
+            .unwrap()
+            .bytes()
+            .unwrap(),
+        b"first"
+    );
+    assert_eq!(
+        ready(authenticator::execute_with_session(
+            &mut repo,
+            Request::GetNextAssertion,
+            &mut presence,
+            &mut out,
+            &mut session,
+            2
+        )),
+        Err(Status::NotAllowed)
+    );
+    discovery_call(&mut repo, &mut session, 0, false);
+    assert_eq!(
+        ready(authenticator::execute_with_session(
+            &mut repo,
+            Request::GetNextAssertion,
+            &mut presence,
+            &mut out,
+            &mut session,
+            30000
+        )),
+        Err(Status::NotAllowed)
+    );
+    discovery_call(&mut repo, &mut session, 0, false);
+    session.invalidate();
+    assert_eq!(
+        ready(authenticator::execute_with_session(
+            &mut repo,
+            Request::GetNextAssertion,
+            &mut presence,
+            &mut out,
+            &mut session,
+            1
+        )),
+        Err(Status::NotAllowed)
+    );
+    discovery_call(&mut repo, &mut session, 0, false);
+    ready(authenticator::execute_with_session(
+        &mut repo,
+        Request::GetInfo,
+        &mut presence,
+        &mut out,
+        &mut session,
+        1,
+    ))
+    .unwrap();
+    assert_eq!(
+        ready(authenticator::execute_with_session(
+            &mut repo,
+            Request::GetNextAssertion,
+            &mut presence,
+            &mut out,
+            &mut session,
+            2
+        )),
+        Err(Status::NotAllowed)
+    );
+    set_pin(&mut repo, &mut session, b"1234").unwrap();
+    let response = discovery_call(&mut repo, &mut session, 0, true);
+    let map = cbor::decode(&response).unwrap();
+    assert_eq!(map.get_int(2).unwrap().unwrap().bytes().unwrap()[32], 5);
+    assert_eq!(
+        map.get_int(4)
+            .unwrap()
+            .unwrap()
+            .get_text("name")
+            .unwrap()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Name"
+    );
+    let n = ready(authenticator::execute_with_session(
+        &mut repo,
+        Request::GetNextAssertion,
+        &mut presence,
+        &mut out,
+        &mut session,
+        1,
+    ))
+    .unwrap();
+    assert_eq!(
+        cbor::decode(&out[..n])
+            .unwrap()
+            .get_int(4)
+            .unwrap()
+            .unwrap()
+            .get_text("displayName")
+            .unwrap()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Display"
+    );
+}
+#[test]
+fn rk_make_commits_discoverable_credential_and_info_advertises_it() {
+    let mut store = storage::Storage::default();
+    let mut request = make_wire();
+    request[1] = 0xa5;
+    request.extend(b"\x07\xa1\x62rk\xf5");
+    let response = call(&mut store, &request, &mut Presence::default()).unwrap();
+    let auth = cbor::decode(&response)
+        .unwrap()
+        .get_int(2)
+        .unwrap()
+        .unwrap()
+        .bytes()
+        .unwrap();
+    let id = &auth[55..115];
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    assert!(
+        ready(repo.read(id, &sha256(b"example.com")))
+            .unwrap()
+            .unwrap()
+            .discoverable()
+    );
+    let info = call(&mut store, &[4], &mut Presence::default()).unwrap();
+    assert!(
+        cbor::decode(&info)
+            .unwrap()
+            .get_int(4)
+            .unwrap()
+            .unwrap()
+            .get_text("rk")
+            .unwrap()
+            .unwrap()
+            .boolean()
+            .unwrap()
+    );
 }

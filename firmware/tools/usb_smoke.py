@@ -88,10 +88,12 @@ def check_ctap(device):
     pin_set = pin_profile.replace(bytes.fromhex("69 636c69656e7450696e f4"), bytes.fromhex("69 636c69656e7450696e f5"))
     send_hid(device, channel, 0x10, b"\x04")
     actual = receive_hid(device, channel, 0x10)
-    if actual not in (expected_info, pin_profile, pin_set):
+    resident_profiles = tuple(profile.replace(b"\x62rk\xf4", b"\x62rk\xf5") for profile in (pin_profile, pin_set))
+    if actual not in (expected_info, pin_profile, pin_set, *resident_profiles):
         raise RuntimeError("Unexpected operational GetInfo profile")
     expected_info = actual
-    assertion = b"\x02\xa2\x01\x6bexample.com\x02\x58\x20" + bytes(32)
+    rp = ("smoke-" + os.urandom(8).hex() + ".invalid").encode()
+    assertion = b"\x02\xa2\x01" + bytes([0x78, len(rp)]) + rp + b"\x02\x58\x20" + bytes(32)
     # A valid unknown member makes the CBOR request span several HID reports.
     fragmented_assertion = b"\x02\xa3" + assertion[2:] + b"\x18\x63\x59\x01\x00" + bytes(range(256))
     checks = [
@@ -104,7 +106,7 @@ def check_ctap(device):
         (b"\x01\xa1\x18\x63\x98\x21" + bytes(33), b"\x39"),  # Collection bound.
         (b"\x01\xa1\x18\x63\xc0\x00", b"\x12"),  # Tag in unknown field.
         (b"\xff", b"\x01"),  # InvalidCommand.
-        (assertion, b"\x2e"),  # No allow list: non-discoverable profile.
+        (assertion, b"\x2e"),  # Fresh RP has no discoverable accounts.
         (fragmented_assertion, b"\x2e"),
         (b"\x04", expected_info),  # Recovery after malformed/unsupported inputs.
     ]

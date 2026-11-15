@@ -20,6 +20,7 @@ pub struct Storage<'d> {
     pub fail_before: bool,
     pub fail_after: bool,
     pub full: bool,
+    pub fail_at: Option<usize>,
     pub reads: usize,
     pub writes: usize,
     pub _lifetime: core::marker::PhantomData<&'d ()>,
@@ -44,11 +45,11 @@ impl Storage<'_> {
         if self.full {
             return Err(Error::Full);
         }
-        if self.fail_before {
+        if self.fail_before && self.fail_at.is_none_or(|at| at == self.writes) {
             return Err(Error::Write);
         }
         self.values.insert(key, value.to_vec());
-        if self.fail_after {
+        if self.fail_after && self.fail_at.is_none_or(|at| at == self.writes) {
             return Err(Error::Write);
         }
         Ok(())

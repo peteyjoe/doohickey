@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--state", required=True, type=Path, help="public credential fixture JSON")
     parser.add_argument("--silent", action="store_true", help="assertion without UP (preflight only)")
     parser.add_argument("--pin", action="store_true", help="prompt privately for the configured PIN")
+    parser.add_argument("--resident", action="store_true", help="create a discoverable credential during registration")
     args = parser.parse_args()
     if args.operation == "register" and (args.silent or args.state.exists()):
         parser.error("registration requires a new state path and physical presence")
@@ -69,7 +70,7 @@ def main():
             result = ctap.make_credential(
                 client.hash, {"id": RP, "name": "DOOHICKEY test"},
                 {"id": os.urandom(16), "name": "test", "displayName": "Test account"},
-                [{"type": "public-key", "alg": -7}], options={"rk": False, "uv": False},
+                [{"type": "public-key", "alg": -7}], options={"rk": args.resident, "uv": False},
                 event=event, on_keepalive=keepalive, **pin_args,
             )
             check(result.fmt == "packed", "Expected packed self-attestation")
@@ -81,7 +82,7 @@ def main():
             credential = auth.credential_data
             check(credential is not None and len(credential.credential_id) == 60, "Invalid credential ID")
             data = {"format": "DOOHICKEY credential test v1", "rp_id": RP,
-                    "credential_data": bytes(credential).hex(), "counter": 0}
+                    "credential_data": bytes(credential).hex(), "counter": 0, "discoverable": args.resident}
             # Exclusive creation avoids overwriting the only copy of an older ID.
             with args.state.open("x") as output:
                 json.dump(data, output, indent=2)

@@ -22,6 +22,7 @@ struct Token {
 }
 #[derive(Default)]
 pub struct Session {
+    pub(crate) assertions: Option<super::authenticator::Continuation>,
     agreement: Option<PinUvKeyAgreement>,
     token: Option<Token>,
     failures: u8,
@@ -30,7 +31,11 @@ impl Session {
     pub fn grant_valid(&self, now: u64) -> bool {
         self.token.as_ref().is_some_and(|t| now < t.deadline)
     }
+    pub fn clear_assertions(&mut self) {
+        self.assertions = None;
+    }
     pub fn invalidate(&mut self) {
+        self.clear_assertions();
         self.token = None;
         self.agreement = None;
     }

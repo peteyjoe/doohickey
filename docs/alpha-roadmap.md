@@ -21,7 +21,7 @@ the browser implementation work. This roadmap is the release checklist.
 | Startup | Local button-confirmed setup/resume, durable settings and credential-key bundle, separate authenticated completion, startup ready/recovery states | Physical qualification, future settings/reset transactions and browser setup orchestration |
 | Storage | Fixed 3 MiB boundary; byte-value map; metadata; encrypted single-value wrapper | Stable application key allocation/encodings, transaction/recovery policy, compatibility checks and migrations |
 | Keys | TRNG-seeded CSPRNG; guarded OTP reader; opt-in hardware writes; separate insecure flash test backend | Qualified provisioning lifecycle, replaceable credential key under the immutable root, reset behavior |
-| CTAP | Bounded codec, ES256 non-discoverable make/get, encrypted repository, durable counters, button UP and queued USB owner | Discoverable credentials, management, reset, extensions and full physical qualification |
+| CTAP | Bounded codec, ES256 discoverable/allow-list flows, ClientPIN, durable counters, button UP and queued USB owner | Management, reset, extensions and full physical qualification |
 | USB | FIDO HID transport and framed CDC ACM; public INFO including startup state | Readiness integration, restricted setup protocol, recovery/update entry workflow |
 | Web app | Serial console, INFO display, text/hex traffic and tests | Installation/update wizard, WebUSB transport, artifact verification, setup/resume UX and WebAuthn test flow |
 | Secure boot | Public-key-hash storage API, not activation | Signed artifact pipeline, complete policy/provisioning implementation, verified recovery and key-rotation plan |
@@ -178,6 +178,11 @@ at every durable step is either safely resumable or clearly enters recovery;
 reset invalidates both discoverable credentials and old wrapped credential IDs.
 
 ## Milestone 2: make the CTAP profile operational
+
+Discoverable ES256 credentials, atomic directory replacement, RP/account lookup
+and channel-scoped getNextAssertion are implemented. [Directory limits and
+formats](discoverable-credentials.md) are explicit. Physical and lengthy Python
+validation are deferred; management commands remain the next implementation task.
 
 - [x] Implement bounded canonical CBOR/COSE input decoding and development
   getInfo output with explicit length, nesting, collection, duplicate-key and
