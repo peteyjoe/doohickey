@@ -39,6 +39,7 @@ def request(req_id: int, cmd: int, payload: bytes = b"") -> tuple[int, int, byte
 print("HELLO  ->", request(0x1234, 0x01))        # (0x1234, 0, b'\x01\x00\x01')
 print("STATUS ->", request(2, 0x02))             # (2, 0, b'\x01\x00\x00')
 print("ECHO   ->", request(3, 0x03, b"hi\x00!")) # (3, 0, b'hi\x00!')
-print("UNKNOWN->", request(4, 0x7F))             # (4, 1, b'')
-ser.write(cobs_encode(b"\x01"))                  # 1 byte: too short
-print("SHORT  ->", cobs_decode(ser.read_until(b"\x00")[:-1]))  # b'\x00\x00\x02'
+print("UNKNOWN->", request(4, 0x7F))   # (4, 1, b'\x01\x00')  status 1, error 0x0001
+ser.write(cobs_encode(b"\x01"))        # 1 byte: too short
+print("SHORT  ->", cobs_decode(ser.read_until(b"\x00")[:-1]))
+# expect b'\x00\x00\x01\x02\x00'  = id 0, status 1, error 0x0002 (BAD_REQUEST)

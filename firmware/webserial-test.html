@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RP2350 Web Serial test</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  button { margin: 0 .4rem .4rem 0; padding: .4rem .8rem; }
+  #log { background: #111; color: #ddd; padding: .75rem; height: 320px; overflow-y: auto;
+         font: 13px/1.4 ui-monospace, monospace; white-space: pre-wrap; }
+  .tx { color: #7cc4ff; } .rx { color: #8be28b; } .err { color: #ff8080; }
+</style>
+</head>
+<body>
+<h1>RP2350 protocol test</h1>
+<p id="state">Disconnected</p>
+<p>
+  <button id="connect">Connect</button>
+  <button id="disconnect" disabled>Disconnect</button>
+</p>
+<p>
+  <button class="cmd" data-cmd="1" disabled>HELLO</button>
+  <button class="cmd" data-cmd="2" disabled>STATUS</button>
+  <button class="cmd" data-cmd="127" disabled>Unknown cmd</button>
+</p>
+<p>
+  <input id="echoText" value="hi there" size="30">
+  <button class="cmd" data-cmd="3" id="echoBtn" disabled>ECHO</button>
+</p>
+<div id="log"></div>
+
+<script>
+// ---------- COBS (same logic as test_frames.py; frame ends with 0x00) ----------
+function cobsEncode(data) {
+  const out = []; let block = [];
+  for (const b of data) {
+    if (b === 0) { out.push(block.length + 1, ...block); block = []; }
+    else {
+      block.push(b);
+      if (block.length === 254) { out.push(255, ...block); block = []; }
+    }
+  }
+  out.push(block.length + 1, ...block);
+  out.push(0); // delimiter
+  return Uint8Array.from(out);
+}
+
+// frame = encoded bytes WITHOUT the trailing 0x00
+function cobsDecode(frame) {
+  const out = []; let i = 0;
+  while (i < frame.length) {
+    const code = frame[i++];
+    if (code === 0 || i + code - 1 > frame.length) return null; // malformed
+    for (let k = 0; k < code - 1; k++) out.push(frame[i++]);
+    if (code !== 255 && i < frame.length) out.push(0);
+  }
+  return Uint8Array.from(out);
+}
+
+// ---------- UI helpers ----------
+const $ = (id) => document.getElementById(id);
+const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+function log(msg, cls = "") {
+  const d = document.createElement("div");
+  d.className = cls; d.textContent = msg;
+  $("log").appendChild(d); $("log").scrollTop = $("log").scrollHeight;
+}
+function setConnected(on) {
+  $("state").textContent = on ? "Connected" : "Disconnected";
+  $("connect").disabled = on; $("disconnect").disabled = !on;
+  document.querySelectorAll(".cmd").forEach((b) => (b.disabled = !on));
+}
+
+// ---------- Serial ----------
+let port, writer, reader, rxBuf = [], nextId = 1;
+let keepReading = false;            // the read loop runs only while this is true
+let closing = false;                // guards against overlapping disconnects
+let readLoopDone = Promise.resolve(); // resolves when the read loop has exited
+const pending = new Map(); // req_id -> {resolve, reject, timer}
+
+async function connect() {
+  if (!("serial" in navigator)) { log("Web Serial not supported (use Chrome/Edge)", "err"); return; }
+  try {
+    port = await navigator.serial.requestPort({
+      filters: [{ usbVendorId: 0x1209, usbProductId: 0x0001 }], // dev VID:PID
+    });
+    await port.open({ baudRate: 115200 }); // ignored by CDC, but required
+    await port.setSignals({ dataTerminalReady: true }); // firmware waits for DTR
+    writer = port.writable.getWriter();
+    await writer.write(Uint8Array.of(0)); // lone delimiter: flushes any half-received frame on the device
+    keepReading = true;
+    setConnected(true); log("Port opened");
+    readLoopDone = readLoop();
+  } catch (e) { log("Connect failed: " + e.message, "err"); }
+}
+
+async function disconnect() {
+  if (closing || !port) return;
+  closing = true;
+  keepReading = false;                       // 1. tell the loop not to start another read
+  try { await reader?.cancel(); } catch {}   // 2. wake the pending read()
+  await readLoopDone;                        // 3. wait until the loop has released its lock
+  try { writer?.releaseLock(); } catch {}
+  writer = null;
+  try { await port.close(); }                // 4. only now can the port close
+  catch (e) { log("Close error: " + e.message, "err"); }
+  port = null;
+  for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error("disconnected")); }
+  pending.clear();
+  setConnected(false); log("Port closed");
+  closing = false;
+}
+
+async function readLoop() {
+  while (keepReading && port && port.readable) {
+    reader = port.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) { keepReading = false; break; } // stream closed: stop, don't grab a new reader
+        for (const b of value) {
+          if (b !== 0) { rxBuf.push(b); continue; }
+          if (rxBuf.length) onFrame(Uint8Array.from(rxBuf));
+          rxBuf = [];
+        }
+      }
+    } catch (e) { log("Read error: " + e.message, "err"); } // fatal errors null port.readable and end the loop
+    finally { reader.releaseLock(); reader = null; }
+  }
+  rxBuf = [];
+  if (!closing) setTimeout(disconnect, 0); // loop ended on its own (e.g. unplugged): clean up
+}
+
+function onFrame(encoded) {
+  const msg = cobsDecode(encoded);
+  if (!msg) { log("RX bad COBS: " + hex(encoded), "err"); return; }
+  if (msg.length < 3) { // e.g. firmware's plain-text "ERR ..." replies
+    log("RX short: " + new TextDecoder().decode(msg), "err"); return;
+  }
+  const id = msg[0] | (msg[1] << 8), status = msg[2], body = msg.slice(3);
+  log(`RX id=${id} status=${status} body=[${hex(body)}]`, "rx");
+  const p = pending.get(id);
+  if (p) { clearTimeout(p.timer); pending.delete(id); p.resolve({ id, status, body }); }
+}
+
+// Send a request, resolve with the matching response (or reject on timeout)
+function request(cmd, payload = new Uint8Array()) {
+  const id = nextId++ & 0xffff;
+  const msg = new Uint8Array(3 + payload.length);
+  msg[0] = id & 0xff; msg[1] = id >> 8; msg[2] = cmd; msg.set(payload, 3);
+  log(`TX id=${id} cmd=${cmd} payload=[${hex(payload)}]`, "tx");
+  return new Promise(async (resolve, reject) => {
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error("timeout")); }, 2000);
+    pending.set(id, { resolve, reject, timer });
+    try { await writer.write(cobsEncode(msg)); }
+    catch (e) { clearTimeout(timer); pending.delete(id); reject(e); }
+  });
+}
+
+// ---------- Wire up buttons ----------
+$("connect").onclick = connect;
+$("disconnect").onclick = disconnect;
+document.querySelectorAll(".cmd").forEach((btn) => {
+  btn.onclick = async () => {
+    const cmd = Number(btn.dataset.cmd);
+    const payload = btn.id === "echoBtn" ? new TextEncoder().encode($("echoText").value) : undefined;
+    try { await request(cmd, payload); } catch (e) { log("Request failed: " + e.message, "err"); }
+  };
+});
+navigator.serial?.addEventListener("disconnect", () => { log("Device unplugged", "err"); disconnect(); });
+</script>
+</body>
+</html>
