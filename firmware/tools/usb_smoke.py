@@ -78,6 +78,19 @@ def check_ctap(device):
         " 04 a3 62 726b f4 62 7570 f5 64 706c6174 f4 05 19 0400 07 08 08 183c"
         " 09 81 63 757362 0a 81 a2 63 616c67 26 64 74797065 6a 7075626c69632d6b6579"
     )
+    pin_profile = bytes.fromhex(
+        "00 a9 01 81 68 4649444f5f325f30 03 50 444f4f4849434b45592d444556303031"
+        " 04 a5 62 726b f4 62 7570 f5 64 706c6174 f4 69 636c69656e7450696e f4"
+        " 6e 70696e557641757468546f6b656e f5 05 19 0400 06 81 02 07 08 08 183c"
+        " 09 81 63 757362 0a 81 a2 63 616c67 26 64 74797065 6a 7075626c69632d6b6579"
+    )
+    # clientPin=false means implemented but not set. True is the same length.
+    pin_set = pin_profile.replace(bytes.fromhex("69 636c69656e7450696e f4"), bytes.fromhex("69 636c69656e7450696e f5"))
+    send_hid(device, channel, 0x10, b"\x04")
+    actual = receive_hid(device, channel, 0x10)
+    if actual not in (expected_info, pin_profile, pin_set):
+        raise RuntimeError("Unexpected operational GetInfo profile")
+    expected_info = actual
     assertion = b"\x02\xa2\x01\x6bexample.com\x02\x58\x20" + bytes(32)
     # A valid unknown member makes the CBOR request span several HID reports.
     fragmented_assertion = b"\x02\xa3" + assertion[2:] + b"\x18\x63\x59\x01\x00" + bytes(range(256))

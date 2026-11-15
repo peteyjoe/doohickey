@@ -10,7 +10,8 @@ The firmware now implements the development non-discoverable ES256 registration
 and allow-list assertion flow, including packed self-attestation, encrypted
 persistence, durable signature counters and fresh physical button confirmation.
 It advertises FIDO_2_0 with UP, ES256, a 1024-byte limit, 8 list entries and
-60-byte credential IDs. PIN/UV, discoverability and extensions remain unavailable;
+60-byte credential IDs, dynamic clientPin, pinUvAuthToken and protocol [2]. Protocol-2 ClientPIN and PIN-based UV are implemented; discoverability and
+extensions remain unavailable;
 TARGET_* constants describe the future CTAP 2.3 profile, not current capabilities.
 See [credential persistence and the update test](../../../docs/credential-milestone.md)
 for the operational profile, persistent format, limitations and test commands.
@@ -91,8 +92,9 @@ The standalone `DiscoveryBackend` remains a read-only, unavailable-profile adapt
 its getInfo uses up=false. Main uses the operational adapter after initialization
 and entropy succeed; serial ctap_ready reflects that availability.
 
-The target profile still needs PIN verification, persistent retries, token
-scope/expiry/RP binding, discoverable credentials and management, extension
+ClientPIN implements protocol 2, persistent retries, scoped expiring RAM tokens
+and PIN-based UV; see [the PIN guide](../../../docs/client-pin.md). The target
+profile still needs discoverable credentials and management, extension
 integration, reset and continuation handling. It remains a development build,
 not a full CTAP 2.3 implementation or compliance claim.
 

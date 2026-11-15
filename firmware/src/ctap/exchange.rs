@@ -20,6 +20,8 @@ pub struct Exchange {
     cancelled: Cell<bool>,
     presence: Cell<bool>,
     pub ready: Cell<bool>,
+    pub epoch: Cell<u64>,
+    channel: Cell<u32>,
 }
 impl Default for Exchange {
     fn default() -> Self {
@@ -36,6 +38,8 @@ impl Exchange {
             cancelled: Cell::new(false),
             presence: Cell::new(false),
             ready: Cell::new(false),
+            epoch: Cell::new(0),
+            channel: Cell::new(0),
         }
     }
     pub fn start(&self, input: &[u8]) -> Result<()> {
@@ -108,7 +112,13 @@ impl Exchange {
         inner.state = State::Idle;
         Some(result)
     }
+    pub fn channel(&self, channel: u32) {
+        if self.channel.replace(channel) != channel {
+            self.epoch.set(self.epoch.get().wrapping_add(1));
+        }
+    }
     pub fn cancel(&self) {
+        self.epoch.set(self.epoch.get().wrapping_add(1));
         self.cancelled.set(true);
     }
     pub fn cancelled(&self) -> bool {

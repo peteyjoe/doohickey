@@ -3,6 +3,8 @@
 mod authenticator;
 #[path = "../../ctap/mod.rs"]
 mod ctap;
+#[path = "../../ctap/pin_session.rs"]
+mod pin_session;
 #[path = "support/credential_storage.rs"]
 mod storage;
 // The authenticator's parent is the test crate instead of firmware::ctap.
@@ -24,6 +26,173 @@ fn ready<F: core::future::Future>(future: F) -> F::Output {
 }
 fn key() -> MasterKey {
     MasterKey::from_bytes(Zeroizing::new([7; 32]))
+}
+
+fn agreement(
+    repo: &mut Repository<'_, '_, '_, '_, ChaCha20Rng>,
+    session: &mut pin_session::Session,
+) -> (doohickey_crypto::ctap::PinUvSharedSecret, [u8; 65]) {
+    use doohickey_crypto::ctap::{PinUvKeyAgreement, PinUvProtocol};
+    let mut out = [0; 512];
+    let n = ready(session.handle(
+        repo,
+        pin_uv::Request::GetKeyAgreement { protocol: 2 },
+        0,
+        &mut out,
+    ))
+    .unwrap();
+    let cose = cbor::decode(&out[..n])
+        .unwrap()
+        .get_int(1)
+        .unwrap()
+        .unwrap();
+    let mut point = [0; 65];
+    point[0] = 4;
+    point[1..33].copy_from_slice(cose.get_int(-2).unwrap().unwrap().bytes().unwrap());
+    point[33..].copy_from_slice(cose.get_int(-3).unwrap().unwrap().bytes().unwrap());
+    let mut random = ChaCha20Rng::from_seed([25; 32]);
+    let client = PinUvKeyAgreement::generate(&mut random);
+    (
+        client.agree(&point, PinUvProtocol::Two).unwrap(),
+        client.public_key(),
+    )
+}
+fn set_pin(
+    repo: &mut Repository<'_, '_, '_, '_, ChaCha20Rng>,
+    session: &mut pin_session::Session,
+    pin: &[u8],
+) -> Result<usize> {
+    let (shared, point) = agreement(repo, session);
+    let mut padded = [0; 64];
+    padded[..pin.len()].copy_from_slice(pin);
+    let mut encrypted = [0; 80];
+    let mut random = ChaCha20Rng::from_seed([26; 32]);
+    shared
+        .encrypt(&mut random, &padded, &mut encrypted)
+        .unwrap();
+    let mut tag = [0; 32];
+    shared.authenticate(&encrypted, &mut tag).unwrap();
+    ready(session.handle(
+        repo,
+        pin_uv::Request::SetPin {
+            protocol: 2,
+            key_agreement: &point,
+            new_pin_enc: &encrypted,
+            pin_uv_auth_param: &tag,
+        },
+        0,
+        &mut [0; 512],
+    ))
+}
+fn token(
+    repo: &mut Repository<'_, '_, '_, '_, ChaCha20Rng>,
+    session: &mut pin_session::Session,
+    pin: &[u8],
+    now: u64,
+) -> Result<[u8; 32]> {
+    let (shared, point) = agreement(repo, session);
+    let mut encrypted = [0; 32];
+    let mut random = ChaCha20Rng::from_seed([27; 32]);
+    shared
+        .encrypt(&mut random, &sha256(pin)[..16], &mut encrypted)
+        .unwrap();
+    let mut out = [0; 512];
+    let n = ready(session.handle(
+        repo,
+        pin_uv::Request::GetTokenWithPermissions {
+            protocol: 2,
+            key_agreement: &point,
+            pin_hash_enc: &encrypted,
+            permissions: pin_uv::Permissions::from_bits(3).unwrap(),
+            rp_id: Some("example.com"),
+        },
+        now,
+        &mut out,
+    ))?;
+    let bytes = cbor::decode(&out[..n])
+        .unwrap()
+        .get_int(2)
+        .unwrap()
+        .unwrap()
+        .bytes()
+        .unwrap();
+    let mut key = [0; 32];
+    assert_eq!(shared.decrypt(bytes, &mut key).unwrap(), 32);
+    Ok(key)
+}
+#[test]
+fn client_pin_persists_scopes_tokens_expires_and_blocks_wrong_pin() {
+    use doohickey_crypto::ctap::hmac_sha256;
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut session = pin_session::Session::default();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    assert_eq!(set_pin(&mut repo, &mut session, b"1234"), Ok(0));
+    assert_eq!(
+        set_pin(&mut repo, &mut session, b"5678"),
+        Err(Status::PinAuthInvalid)
+    );
+    let key = token(&mut repo, &mut session, b"1234", 100).unwrap();
+    let tag = hmac_sha256(&key, &[7; 32]);
+    let auth = pin_uv::AuthParameters {
+        protocol: Some(2),
+        parameter: Some(&tag),
+    };
+    assert_eq!(
+        session.authorize(
+            &auth,
+            &sha256(b"wrong.rp"),
+            &[7; 32],
+            pin_uv::Permission::MakeCredential,
+            101
+        ),
+        Err(Status::PinAuthInvalid)
+    );
+    assert_eq!(
+        session.authorize(
+            &auth,
+            &sha256(b"example.com"),
+            &[7; 32],
+            pin_uv::Permission::MakeCredential,
+            101
+        ),
+        Ok(true)
+    );
+    assert_eq!(
+        session.authorize(
+            &auth,
+            &sha256(b"example.com"),
+            &[7; 32],
+            pin_uv::Permission::CredentialManagement,
+            101
+        ),
+        Err(Status::PinAuthInvalid)
+    );
+    assert_eq!(
+        session.authorize(
+            &auth,
+            &sha256(b"example.com"),
+            &[7; 32],
+            pin_uv::Permission::MakeCredential,
+            30100
+        ),
+        Err(Status::PinAuthInvalid)
+    );
+    for expected in [
+        Status::PinInvalid,
+        Status::PinInvalid,
+        Status::PinAuthBlocked,
+        Status::PinAuthBlocked,
+    ] {
+        assert_eq!(token(&mut repo, &mut session, b"wrong", 0), Err(expected));
+    }
+    drop(repo);
+    let mut session = pin_session::Session::default();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    assert_eq!(ready(session.load(&mut repo)).unwrap().unwrap()[24], 5);
+    assert!(token(&mut repo, &mut session, b"1234", 0).is_ok());
+    assert_eq!(ready(session.load(&mut repo)).unwrap().unwrap()[24], 8);
 }
 fn rng() -> ChaCha20Rng {
     ChaCha20Rng::from_seed([3; 32])
@@ -491,7 +660,7 @@ fn unsupported_options_are_errors_and_storage_failures_never_become_no_credentia
         (b"\x07\xa1\x62uv\xf5".as_slice(), Status::InvalidOption),
         (b"\x07\xa1\x62up\xf4".as_slice(), Status::InvalidOption),
         (b"\x07\xa1\x62rk\xf5".as_slice(), Status::UnsupportedOption),
-        (b"\x08\x40".as_slice(), Status::MissingParameter),
+        (b"\x08\x40".as_slice(), Status::PinNotSet),
     ] {
         let mut msg = make_wire();
         msg[1] = 0xa5;
@@ -527,4 +696,206 @@ fn unsupported_options_are_errors_and_storage_failures_never_become_no_credentia
         ),
         Err(Status::IntegrityFailure)
     ));
+}
+
+#[test]
+fn client_pin_change_preserves_credentials_and_missing_state_is_not_unset() {
+    let mut store = storage::Storage::default();
+    let (id, public) = fixture(&mut store);
+    let master = key();
+    let mut random = rng();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    let mut session = pin_session::Session::default();
+    set_pin(&mut repo, &mut session, b"1234").unwrap();
+    let (shared, point) = agreement(&mut repo, &mut session);
+    let mut padded = [0; 64];
+    padded[..5].copy_from_slice(b"56789");
+    let mut client = rng();
+    let mut new_enc = [0; 80];
+    shared.encrypt(&mut client, &padded, &mut new_enc).unwrap();
+    let mut old_enc = [0; 32];
+    shared
+        .encrypt(&mut client, &sha256(b"1234")[..16], &mut old_enc)
+        .unwrap();
+    let mut message = [0; 112];
+    message[..80].copy_from_slice(&new_enc);
+    message[80..].copy_from_slice(&old_enc);
+    let mut tag = [0; 32];
+    shared.authenticate(&message, &mut tag).unwrap();
+    ready(session.handle(
+        &mut repo,
+        pin_uv::Request::ChangePin {
+            protocol: 2,
+            key_agreement: &point,
+            new_pin_enc: &new_enc,
+            pin_hash_enc: &old_enc,
+            pin_uv_auth_param: &tag,
+        },
+        0,
+        &mut [0; 512],
+    ))
+    .unwrap();
+    assert!(token(&mut repo, &mut session, b"56789", 0).is_ok());
+    assert_eq!(
+        token(&mut repo, &mut session, b"1234", 0),
+        Err(Status::PinInvalid)
+    );
+    assert_eq!(
+        ready(repo.read(&id, &sha256(b"example.com")))
+            .unwrap()
+            .unwrap()
+            .public_key()
+            .unwrap(),
+        public
+    );
+    drop(repo);
+    store.values.remove(&0x0200_0000);
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    assert!(matches!(
+        ready(session.load(&mut repo)),
+        Err(Status::IntegrityFailure)
+    ));
+}
+#[test]
+fn client_pin_eight_attempts_survive_reboots_and_disconnect_does_not_clear_soft_block() {
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut session = pin_session::Session::default();
+    {
+        let mut repo = Repository::new(&mut store, &master, &mut random);
+        set_pin(&mut repo, &mut session, b"1234").unwrap();
+    }
+    for attempt in 0..8 {
+        if attempt % 3 == 0 {
+            session = pin_session::Session::default();
+        }
+        let mut repo = Repository::new(&mut store, &master, &mut random);
+        let expected = if attempt == 7 {
+            Status::PinBlocked
+        } else if attempt % 3 == 2 {
+            Status::PinAuthBlocked
+        } else {
+            Status::PinInvalid
+        };
+        assert_eq!(token(&mut repo, &mut session, b"bad", 0), Err(expected));
+        assert_eq!(
+            ready(session.load(&mut repo)).unwrap().unwrap()[24],
+            7 - attempt
+        );
+        session.invalidate();
+        if attempt % 3 == 2 {
+            assert_eq!(
+                token(&mut repo, &mut session, b"1234", 0),
+                Err(Status::PinAuthBlocked)
+            );
+        }
+    }
+    session = pin_session::Session::default();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    assert_eq!(
+        token(&mut repo, &mut session, b"1234", 0),
+        Err(Status::PinBlocked)
+    );
+}
+#[test]
+fn client_pin_uv_grant_is_used_for_credential_flags_and_is_single_use() {
+    use doohickey_crypto::ctap::hmac_sha256;
+    let mut store = storage::Storage::default();
+    let master = key();
+    let mut random = rng();
+    let mut session = pin_session::Session::default();
+    let mut repo = Repository::new(&mut store, &master, &mut random);
+    set_pin(&mut repo, &mut session, b"1234").unwrap();
+    let grant = token(&mut repo, &mut session, b"1234", 0).unwrap();
+    let mut msg = make_wire();
+    msg[1] = 0xa6;
+    msg.extend([8, 0x58, 32]);
+    msg.extend(hmac_sha256(&grant, &[0; 32]));
+    msg.extend([9, 2]);
+    for success in [true, false] {
+        let mut scratch = ctap::codec::Scratch::new();
+        let request = ctap::codec::decode(&msg, &mut scratch).unwrap();
+        let mut out = [0xa5; 1023];
+        let result = ready(authenticator::execute_with_session(
+            &mut repo,
+            request,
+            &mut Presence::default(),
+            &mut out,
+            &mut session,
+            0,
+        ));
+        if success {
+            let n = result.unwrap();
+            let auth = cbor::decode(&out[..n])
+                .unwrap()
+                .get_int(2)
+                .unwrap()
+                .unwrap()
+                .bytes()
+                .unwrap();
+            assert_eq!(auth[32], 0x45);
+        } else {
+            assert_eq!(result, Err(Status::PinAuthInvalid));
+            assert_eq!(out, [0; 1023]);
+        }
+    }
+    let msg = make_wire();
+    let mut scratch = ctap::codec::Scratch::new();
+    let req = ctap::codec::decode(&msg, &mut scratch).unwrap();
+    assert_eq!(
+        ready(authenticator::execute_with_session(
+            &mut repo,
+            req,
+            &mut Presence::default(),
+            &mut [0; 1023],
+            &mut session,
+            0
+        )),
+        Err(Status::PinUvAuthTokenRequired)
+    );
+}
+#[test]
+fn client_pin_policy_and_uncertain_retry_writes_fail_closed() {
+    for pin in [
+        b"123".as_slice(),
+        b"\xff\xff\xff\xff".as_slice(),
+        b"ab\0cd".as_slice(),
+    ] {
+        let mut store = storage::Storage::default();
+        let master = key();
+        let mut random = rng();
+        let mut repo = Repository::new(&mut store, &master, &mut random);
+        assert_eq!(
+            set_pin(&mut repo, &mut pin_session::Session::default(), pin),
+            Err(Status::PinPolicyViolation)
+        );
+        assert!(store.values.is_empty());
+    }
+    for after in [false, true] {
+        let mut store = storage::Storage::default();
+        let master = key();
+        let mut random = rng();
+        let mut session = pin_session::Session::default();
+        {
+            let mut repo = Repository::new(&mut store, &master, &mut random);
+            set_pin(&mut repo, &mut session, b"1234").unwrap();
+        }
+        store.fail_before = !after;
+        store.fail_after = after;
+        {
+            let mut repo = Repository::new(&mut store, &master, &mut random);
+            assert_eq!(
+                token(&mut repo, &mut session, b"1234", 0),
+                Err(Status::Other)
+            );
+        }
+        store.fail_before = false;
+        store.fail_after = false;
+        let mut repo = Repository::new(&mut store, &master, &mut random);
+        assert_eq!(
+            ready(session.load(&mut repo)).unwrap().unwrap()[24],
+            if after { 7 } else { 8 }
+        );
+    }
 }

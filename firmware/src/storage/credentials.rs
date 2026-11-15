@@ -74,6 +74,36 @@ pub struct Repository<'s, 'd, 'k, 'r, R: CryptoRngCore> {
     id_key: Zeroizing<[u8; 32]>,
 }
 impl<'s, 'd, 'k, 'r, R: CryptoRngCore> Repository<'s, 'd, 'k, 'r, R> {
+    pub(crate) fn rng(&mut self) -> &mut R {
+        self.rng
+    }
+    pub(crate) async fn pin_read(
+        &mut self,
+        key: u32,
+        out: &mut [u8],
+    ) -> Result<Option<usize>, Error> {
+        assert!(matches!(key, 0x0200_0000 | 0x0200_0001));
+        EncryptedStorage::new(self.storage, self.key, self.rng)
+            .read(key, RecordKind::Configuration, out)
+            .await
+            .map_err(map_error)
+    }
+    pub(crate) async fn pin_store(&mut self, key: u32, value: &[u8]) -> Result<(), Error> {
+        assert!(matches!(key, 0x0200_0000 | 0x0200_0001));
+        EncryptedStorage::new(self.storage, self.key, self.rng)
+            .store(key, RecordKind::Configuration, value)
+            .await
+            .map_err(map_error)?;
+        let mut check = Zeroizing::new([0; 64]);
+        let n = self
+            .pin_read(key, &mut check[..])
+            .await?
+            .ok_or(Error::Integrity)?;
+        if !bool::from(check[..n].ct_eq(value)) {
+            return Err(Error::Integrity);
+        }
+        Ok(())
+    }
     /// Use the replaceable credential key from validated initialization, never
     /// the OTP root. Firmware versions and flash geometries are not KDF inputs.
     pub fn new(storage: &'s mut Storage<'d>, key: &'k MasterKey, rng: &'r mut R) -> Self {

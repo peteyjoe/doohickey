@@ -173,8 +173,8 @@ managed in `firmware/Cargo.toml`, rather than a Nix package.
 The `firmware/` crate runs the [initialization coordinator](firmware/src/init/README.md)
 after hardware setup, then starts a composite USB device with FIDO HID transport
 and CDC ACM serial. It reports startup status through RTT/defmt and serial INFO.
-The ES256 allow-list credential flow is implemented; PIN/UV, discoverable
-credentials and serial authentication still need their application backends. Eligible device setup uses a fresh three-second hold and release on
+The ES256 allow-list credential flow is implemented; PIN-based UV is implemented; discoverable credentials and serial
+authentication still need their application backends. Eligible device setup uses a fresh three-second hold and release on
 GPIO 23 (active low, pull-up). It verifies durable settings, credential key and
 completion records before reporting base initialization ready. Real root writes
 additionally require the explicit `otp-provisioning` feature; use
@@ -401,7 +401,8 @@ timeouts, cancellation, and keepalives. Bounded canonical CBOR decoding and a
 public `authenticatorGetInfo` response are connected. The development FIDO_2_0
 profile supports ES256 non-discoverable registration, packed self-attestation
 and allow-list assertions with fresh GPIO 23 confirmation (GPIO 25 flashes).
-PIN/UV, discoverable credentials and extensions remain unavailable. See the
+Protocol-2 ClientPIN and PIN-based UV are implemented; discoverable credentials
+and extensions remain unavailable. See [PIN setup and tests](docs/client-pin.md). See the
 [credential milestone guide](docs/credential-milestone.md) for encrypted storage
 and the register/update/authenticate test.
 

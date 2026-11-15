@@ -1,5 +1,32 @@
 # Physical validation log
 
+## ClientPIN and PIN-based UV development build
+
+The user reports successful physical credential registration tests on the
+preceding build. This is user-reported evidence; the automated logs below do
+not independently establish the exact registration/update procedure used.
+
+The same 4 MiB flash-emulated-OTP board was updated to the ClientPIN build with
+sector programming and `--restore-unwritten --verify --reset`. Programmed LOAD
+segments ended at `0x1004dae0`, below storage at `0x10300000`. ELF SHA-256:
+`e44ac8cf17d5bd2c1dd5e5db0a7c843474c6df9751f6ec39af6df6e3f192fbdd`.
+
+After native USB re-enumeration, the HID smoke checks passed. Independent
+python-fido2 read-only status reported PIN configured false, eight attempts and
+no temporary block. Public serial INFO retained initialization `ready / none`
+and `ctap_ready=true`. No physical PIN was set/changed, no candidate PIN was
+submitted, and no hardware OTP, secure boot or credential reset was performed.
+
+115 host tests, host/embedded Clippy and all four flash-size/OTP-policy release
+builds passed. Independent Yubico interop against the host-only simulator passed
+PIN setup/change, protocol 2, scoped tokens, UV registration/assertion signatures,
+legacy retrieval and retries across simulated reboot. A real sequential-storage
+map over NOR simulation also passed every-byte interruption of a last-attempt
+retry write. These do not establish physical PIN/UV persistence or lockout.
+
+[PIN setup, format and qualification instructions](client-pin.md) describe the
+remaining user-driven hardware checks. The physical board remains PIN-unset.
+
 ## Credential repository and ES256 operations: current development image
 
 The connected 4 MiB flash-emulated-OTP board was updated with the operational

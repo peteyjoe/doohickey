@@ -22,6 +22,9 @@ struct ButtonPresence<'a, 'd> {
     timeout: u32,
 }
 impl Presence for ButtonPresence<'_, '_> {
+    fn now_ms(&self) -> u64 {
+        Instant::now().as_millis()
+    }
     async fn confirm(&mut self) -> ctap::Result<()> {
         self.exchange.set_presence(true);
         defmt::info!("CTAP: press and release GPIO 23 to confirm");
@@ -62,6 +65,8 @@ pub async fn run(
 ) -> ! {
     let mut entropy = HardwareEntropy::new(trng);
     let mut rng = None;
+    let mut session = ctap::pin_session::Session::default();
+    let mut epoch = exchange.epoch.get();
     let mut retry_entropy_at = 0;
     let mut setup_gate = init::presence::PresenceGate::new(Instant::now().as_millis());
     if report.get().permits_setup() {
@@ -71,6 +76,11 @@ pub async fn run(
     let mut output = Zeroizing::new([0; ctap::exchange::CAPACITY - 1]);
     loop {
         let now = Instant::now().as_millis();
+        if epoch != exchange.epoch.get() {
+            session.invalidate();
+            epoch = exchange.epoch.get();
+        }
+        session.expire(now);
         if report.get().permits_setup() {
             if setup_gate.expired(now) {
                 setup_gate = init::presence::PresenceGate::new(now);
@@ -101,9 +111,20 @@ pub async fn run(
         }
         if report.get().state == State::Ready && rng.is_none() && now >= retry_entropy_at {
             match entropy.seed_rng().await {
-                Ok(seeded) => {
+                Ok(mut seeded) => {
+                    let valid =
+                        if let Some((backend, initialized)) = coordinator.application_parts() {
+                            let mut repository = Repository::new(
+                                backend.storage(),
+                                initialized.credential_key(),
+                                &mut seeded,
+                            );
+                            session.load(&mut repository).await.is_ok()
+                        } else {
+                            false
+                        };
                     rng = Some(seeded);
-                    exchange.ready.set(true);
+                    exchange.ready.set(valid);
                     defmt::info!("CTAP ES256 allow-list profile ready");
                 }
                 Err(_) => {
@@ -117,13 +138,10 @@ pub async fn run(
             let result = match ctap::codec::decode(&input[..len], &mut scratch) {
                 Err(error) => Err(error),
                 Ok(_) if exchange.cancelled() => Err(Status::KeepaliveCancel),
-                Ok(Request::GetInfo) => {
-                    if exchange.ready.get() {
-                        ctap::info::encode_for_authenticator(&mut output[..])
-                    } else {
-                        ctap::info::encode(&mut output[..])
-                    }
+                Ok(Request::GetInfo) if !exchange.ready.get() => {
+                    ctap::info::encode(&mut output[..])
                 }
+                Ok(_) if !exchange.ready.get() => Err(Status::OperationDenied),
                 Ok(request) => match (coordinator.application_parts(), rng.as_mut()) {
                     (Some((backend, initialized)), Some(rng)) => {
                         let mut repository =
@@ -134,17 +152,23 @@ pub async fn run(
                             exchange,
                             timeout: initialized.settings().user_presence_timeout_ms,
                         };
-                        ctap::authenticator::execute(
+                        ctap::authenticator::execute_with_session(
                             &mut repository,
                             request,
                             &mut presence,
                             &mut output[..],
+                            &mut session,
+                            Instant::now().as_millis(),
                         )
                         .await
                     }
                     _ => Err(Status::OperationDenied),
                 },
             };
+            if epoch != exchange.epoch.get() {
+                session.invalidate();
+                epoch = exchange.epoch.get();
+            }
             exchange.complete(result, &output[..]);
             // Input contains account identifiers/encrypted PIN fields. Never log.
             use zeroize::Zeroize;

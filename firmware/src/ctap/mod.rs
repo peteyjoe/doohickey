@@ -15,6 +15,8 @@ pub mod credentials;
 pub mod exchange;
 pub mod extensions;
 pub mod info;
+#[cfg(target_os = "none")]
+pub mod pin_session;
 pub mod pin_uv;
 pub mod presence;
 pub mod status;

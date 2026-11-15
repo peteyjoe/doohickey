@@ -260,7 +260,7 @@ pub fn decode<'a>(message: &'a [u8], scratch: &'a mut Scratch<'a>) -> Result<Req
             if subcommand == 1 {
                 return Ok(Request::ClientPin(pin_uv::Request::GetRetries));
             }
-            if !matches!(subcommand, 2 | 3 | 4 | 9) {
+            if !matches!(subcommand, 2 | 3 | 4 | 5 | 9) {
                 return Err(Status::InvalidSubcommand);
             }
             let protocol = byte(required(map.get_int(1)?)?)?;
@@ -271,6 +271,11 @@ pub fn decode<'a>(message: &'a [u8], scratch: &'a mut Scratch<'a>) -> Result<Req
             }
             let key_agreement = point(required(map.get_int(3)?)?, &mut scratch.point)?;
             Ok(Request::ClientPin(match subcommand {
+                5 => pin_uv::Request::GetToken {
+                    protocol,
+                    key_agreement,
+                    pin_hash_enc: required(map.get_int(6)?)?.bytes()?,
+                },
                 3 => pin_uv::Request::SetPin {
                     protocol,
                     key_agreement,

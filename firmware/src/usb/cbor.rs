@@ -46,7 +46,8 @@ impl Backend for DiscoveryBackend {
 /// Cancellation/resync/disconnect signal it; they never drop its I/O future.
 pub struct AuthenticatorBackend<'a>(pub &'a crate::ctap::exchange::Exchange);
 impl Backend for AuthenticatorBackend<'_> {
-    fn start(&mut self, _channel: u32, request: &[u8]) -> Result<(), Status> {
+    fn start(&mut self, channel: u32, request: &[u8]) -> Result<(), Status> {
+        self.0.channel(channel);
         self.0.start(request)
     }
     fn poll(&mut self, output: &mut [u8]) -> Completion {

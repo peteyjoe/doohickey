@@ -4,7 +4,8 @@ use super::{
     Request, Result, Status,
     cbor::Encoder,
     credentials::{self, GetAssertion, MakeCredential},
-    pin_uv::AuthParameters,
+    pin_session::Session,
+    pin_uv::Permission,
 };
 use crate::storage::credentials::{self as repository, Credential, Repository};
 use doohickey_crypto::ctap::sha256;
@@ -14,6 +15,9 @@ const _: () = assert!(repository::ID_SIZE == 60);
 
 #[allow(async_fn_in_trait)]
 pub trait Presence {
+    fn now_ms(&self) -> u64 {
+        0
+    }
     /// Fresh physical interaction for this request; no cached setup press.
     async fn confirm(&mut self) -> Result<()>;
     fn cancelled(&self) -> bool;
@@ -28,16 +32,6 @@ impl From<repository::Error> for Status {
             _ => Self::Other,
         }
     }
-}
-fn pin(auth: &AuthParameters<'_>) -> Result<()> {
-    if auth.parameter.is_some() {
-        return Err(if auth.protocol.is_none() {
-            Status::MissingParameter
-        } else {
-            Status::InvalidParameter
-        });
-    }
-    Ok(())
 }
 fn check_cancel(presence: &impl Presence) -> Result<()> {
     if presence.cancelled() {
@@ -55,15 +49,89 @@ pub async fn execute<R: CryptoRngCore>(
     presence: &mut impl Presence,
     output: &mut [u8],
 ) -> Result<usize> {
+    execute_with_session(
+        repository,
+        request,
+        presence,
+        output,
+        &mut Session::default(),
+        0,
+    )
+    .await
+}
+
+pub async fn execute_with_session<R: CryptoRngCore>(
+    repository: &mut Repository<'_, '_, '_, '_, R>,
+    request: Request<'_>,
+    presence: &mut impl Presence,
+    output: &mut [u8],
+    session: &mut Session,
+    now: u64,
+) -> Result<usize> {
     output.zeroize();
     let result = async {
         check_cancel(presence)?;
+        let configured = session.load(repository).await?.is_some();
         match request {
-            Request::MakeCredential(request) => make(repository, request, presence, output).await,
-            Request::GetAssertion(request) => {
-                assertion(repository, request, presence, output).await
+            Request::ClientPin(request) => session.handle(repository, request, now, output).await,
+            Request::MakeCredential(request) => {
+                if request.auth.parameter == Some(&[]) {
+                    presence.confirm().await?;
+                    return Err(if configured {
+                        Status::PinInvalid
+                    } else {
+                        Status::PinNotSet
+                    });
+                }
+                let verified = session.authorize(
+                    &request.auth,
+                    &sha256(request.rp.id.as_bytes()),
+                    request.client_data_hash,
+                    Permission::MakeCredential,
+                    now,
+                )?;
+                if configured && !verified {
+                    return Err(Status::PinUvAuthTokenRequired);
+                }
+                {
+                    let result = make(repository, request, presence, output, verified).await;
+                    let expired = verified && !session.grant_valid(presence.now_ms());
+                    session.consume();
+                    if expired {
+                        Err(Status::PinAuthInvalid)
+                    } else {
+                        result
+                    }
+                }
             }
-            Request::GetInfo => super::info::encode_for_authenticator(output),
+            Request::GetAssertion(request) => {
+                if request.auth.parameter == Some(&[]) {
+                    presence.confirm().await?;
+                    return Err(if configured {
+                        Status::PinInvalid
+                    } else {
+                        Status::PinNotSet
+                    });
+                }
+                let verified = session.authorize(
+                    &request.auth,
+                    &sha256(request.rp_id.as_bytes()),
+                    request.client_data_hash,
+                    Permission::GetAssertion,
+                    now,
+                )?;
+                {
+                    let result = assertion(repository, request, presence, output, verified).await;
+                    let expired = verified && !session.grant_valid(presence.now_ms());
+                    session.consume();
+                    if expired {
+                        Err(Status::PinAuthInvalid)
+                    } else {
+                        result
+                    }
+                }
+            }
+            Request::GetInfo => super::info::encode_with_pin(output, configured),
             Request::GetNextAssertion => Err(Status::NotAllowed),
             // Reset/PIN/management must not acquire provisional success paths.
             _ => Err(Status::InvalidCommand),
@@ -71,6 +139,7 @@ pub async fn execute<R: CryptoRngCore>(
     }
     .await;
     if result.is_err() {
+        session.consume();
         output.zeroize();
     }
     result
@@ -81,10 +150,12 @@ async fn make<R: CryptoRngCore>(
     request: MakeCredential<'_>,
     presence: &mut impl Presence,
     output: &mut [u8],
+    verified: bool,
 ) -> Result<usize> {
-    pin(&request.auth)?;
     credentials::select_algorithm(request.parameters)?;
-    if request.options.user_verification == Some(true) || !request.options.user_presence {
+    if (request.options.user_verification == Some(true) && !verified)
+        || !request.options.user_presence
+    {
         return Err(Status::InvalidOption);
     }
     if request.options.resident_key {
@@ -121,7 +192,7 @@ async fn make<R: CryptoRngCore>(
     check_cancel(presence)?;
     let mut auth_data = [0; 256];
     auth_data[..32].copy_from_slice(&rp_hash);
-    auth_data[32] = 0x41; // UP + AT, never UV/BE/BS.
+    auth_data[32] = 0x41 | if verified { 4 } else { 0 }; // UP + AT, never UV/BE/BS.
     auth_data[37..53].copy_from_slice(&super::info::DEVELOPMENT_AAGUID);
     auth_data[53..55].copy_from_slice(&(repository::ID_SIZE as u16).to_be_bytes());
     auth_data[55..115].copy_from_slice(credential.id());
@@ -184,9 +255,9 @@ async fn assertion<R: CryptoRngCore>(
     request: GetAssertion<'_>,
     presence: &mut impl Presence,
     output: &mut [u8],
+    verified: bool,
 ) -> Result<usize> {
-    pin(&request.auth)?;
-    if request.options.user_verification == Some(true) {
+    if request.options.user_verification == Some(true) && !verified {
         return Err(Status::InvalidOption);
     }
     if request.options.resident_key.is_some() {
@@ -221,7 +292,7 @@ async fn assertion<R: CryptoRngCore>(
     check_cancel(presence)?;
     let mut auth_data = [0; 37];
     auth_data[..32].copy_from_slice(&rp_hash);
-    auth_data[32] = u8::from(request.options.user_presence);
+    auth_data[32] = u8::from(request.options.user_presence) | if verified { 4 } else { 0 };
     auth_data[33..].copy_from_slice(&counter.to_be_bytes());
     let mut signature = Zeroizing::new([0; 72]);
     let signature_len = sign(

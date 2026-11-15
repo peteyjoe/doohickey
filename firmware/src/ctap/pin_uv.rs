@@ -58,6 +58,11 @@ pub enum Request<'a> {
     GetKeyAgreement {
         protocol: u8,
     },
+    GetToken {
+        protocol: u8,
+        key_agreement: &'a [u8; 65],
+        pin_hash_enc: &'a [u8],
+    },
     SetPin {
         protocol: u8,
         key_agreement: &'a [u8; 65],
@@ -85,6 +90,7 @@ impl Request<'_> {
         match self {
             Self::GetRetries => 0x01,
             Self::GetKeyAgreement { .. } => 0x02,
+            Self::GetToken { .. } => 0x05,
             Self::SetPin { .. } => 0x03,
             Self::ChangePin { .. } => 0x04,
             Self::GetTokenWithPermissions { .. } => 0x09,

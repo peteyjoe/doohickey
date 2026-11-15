@@ -86,6 +86,17 @@ pub enum PinUvProtocol {
 pub struct PinUvKeyAgreement(SecretKey);
 
 impl PinUvKeyAgreement {
+    pub fn try_generate(rng: &mut impl CryptoRngCore) -> Result<Self, Error> {
+        let mut bytes = Zeroizing::new([0; 32]);
+        for _ in 0..8 {
+            rng.try_fill_bytes(&mut bytes[..])
+                .map_err(|_| Error::EntropyUnavailable)?;
+            if let Ok(key) = SecretKey::from_slice(&bytes[..]) {
+                return Ok(Self(key));
+            }
+        }
+        Err(Error::EntropyUnavailable)
+    }
     pub fn generate(rng: &mut impl CryptoRngCore) -> Self {
         Self(SecretKey::random(rng))
     }
@@ -197,7 +208,8 @@ impl PinUvSharedSecret {
         }
         let mut iv = [0; 16];
         if prefix != 0 {
-            rng.fill_bytes(&mut iv);
+            rng.try_fill_bytes(&mut iv)
+                .map_err(|_| Error::EntropyUnavailable)?;
             output[..16].copy_from_slice(&iv);
         }
         cbc::Encryptor::<aes::Aes256>::new((&*self.aes).into(), (&iv).into())
