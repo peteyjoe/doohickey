@@ -15,6 +15,6 @@
   padding: 6rem 1rem;
   border: 2px dashed #334155;  /* dashed border so it reads as "empty slot" */
   border-radius: 12px;
-  color: #94a3b8;
+  color: #334155;
 }
 </style>

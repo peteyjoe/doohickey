@@ -1,3 +1,14 @@
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=IBM+Plex+Sans:wght@400;500&display=swap');
 @import "tailwindcss";
 @import "@nuxt/ui";
-body { margin:0; font-family: system-ui, sans-serif; background: #0f172a; color: white} 
+
+:root {
+  --silk: #F2F4EE;  /* page background */
+  --mask: #0D5C46;  /* solder-mask green, main brand color */
+  --gold: #E3B341;  /* gold pads, accent */
+  --ink: #12201A;   /* text */
+  --mist: #D5E4DC;  /* panels and borders */
+}
+
+body { margin: 0; background: var(--silk); color: var(--ink); font-family: 'IBM Plex Sans', system-ui, sans-serif; line-height: 1.6; }
+h1, h2, h3 { font-family: 'Chakra Petch', system-ui, sans-serif; line-height: 1.1; }
