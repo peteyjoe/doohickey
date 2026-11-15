@@ -34,15 +34,13 @@ capabilities `0x0c` (CBOR framing and no CTAP1/U2F MSG). Optional WINK/LOCK are
 not advertised. Channels are unique for this firmware boot and invalidated by
 USB reset/unconfiguration.
 
-**This is a working transport, not a complete CTAP authenticator.** The default
-`cbor::DiscoveryBackend` uses the bounded [CTAP codec](../ctap/README.md) and
-returns a canonical, public getInfo response. The development profile contains
-`FIDO_2_0`, a model AAGUID, USB and the 1024-byte limit; rk/up/plat are false and
-PIN, UV and extensions are omitted. This is an experimental discovery profile,
-not a conformance claim. Structurally valid unfinished commands return
-InvalidCommand (`0x01`); malformed requests return decoding errors. Registration,
-authentication and `FIDO_2_3` capabilities require the real command backend.
-Serial readiness flags remain false.
+Main uses `cbor::AuthenticatorBackend` and the bounded exchange with the single
+application/storage owner. The development FIDO_2_0 profile supports ES256
+registration, packed self-attestation and allow-list assertions with real UP.
+PIN/UV, discoverable credentials, reset, credential management and extensions
+remain unavailable. `ctap_ready` reports this limited profile; serial
+`authentication_ready` remains false. See the [credential milestone guide](../../../docs/credential-milestone.md)
+for button behavior, persistence and the independent client test.
 
 `Backend::start` receives `command_byte || CBOR_parameters`; it must copy/queue
 the input before returning if it needs to retain the request. The discovery

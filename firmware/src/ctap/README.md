@@ -6,20 +6,14 @@ non-discoverable credentials, ClientPIN with protocol 2, credential management,
 `credProtect`, and `hmac-secret`. No biometric, large-blob, enterprise-attestation,
 authenticator-config, or vendor backup modules are added in this step.
 
-This is **not yet a working CTAP authenticator**. The typed command boundary,
-dispatch, algorithm selection, permission parsing, credential-protection filter,
-and protocol-2 hmac-secret helper are implemented. Bounded CBOR/COSE decoding
-and canonical getInfo encoding are connected to [USB HID](../usb/README.md).
-The stateful command algorithms, durable credential/PIN storage, user-presence
-integration, and command deadlines are not connected. The default discovery
-backend returns InvalidCommand for structurally valid unfinished commands;
-malformed requests return decoding errors. TARGET_* constants describe
-the intended profile, not the discovery response or a compliance claim.
-The main application runs startup inspection before USB transport, then
-supports local button-confirmed base initialization. This provisions a root only
-under the selected OTP build policy and prepares settings/credential key; it
-does not implement CTAP credential operations. The [alpha roadmap](../../../docs/alpha-roadmap.md) tracks
-the application algorithms and qualification still required.
+The firmware now implements the development non-discoverable ES256 registration
+and allow-list assertion flow, including packed self-attestation, encrypted
+persistence, durable signature counters and fresh physical button confirmation.
+It advertises FIDO_2_0 with UP, ES256, a 1024-byte limit, 8 list entries and
+60-byte credential IDs. PIN/UV, discoverability and extensions remain unavailable;
+TARGET_* constants describe the future CTAP 2.3 profile, not current capabilities.
+See [credential persistence and the update test](../../../docs/credential-milestone.md)
+for the operational profile, persistent format, limitations and test commands.
 
 ## Modules
 
@@ -86,34 +80,21 @@ required parameters return MissingParameter. Command-specific authorization,
 policy, value lengths and normative error precedence still belong in handlers.
 Do not log requests containing account or PIN information.
 
-## Development getInfo
+## Runtime ownership and remaining state
 
-`usb::cbor::DiscoveryBackend` decodes synchronously and retains only a pending
-getInfo bit. It never retains request references after HID clears the receive
-buffer. Future asynchronous/stateful adapters must own copied request bytes.
-Discovery works in every initialization state and does not access secrets or
-write storage. The transport prefixes the canonical response with status OK.
+`application.rs` owns the coordinator, repository, RNG and physical inputs.
+`usb::cbor::AuthenticatorBackend` forwards copied requests through the bounded
+`ctap::exchange::Exchange`; `authenticator::execute` handles the current profile.
+No borrow of mailbox state spans an await. Cancellation/disconnect requests
+completion at safe points and discards obsolete output, never drops flash I/O.
+The standalone `DiscoveryBackend` remains a read-only, unavailable-profile adapter;
+its getInfo uses up=false. Main uses the operational adapter after initialization
+and entropy succeed; serial ctap_ready reflects that availability.
 
-The current response contains versions `["FIDO_2_0"]`, model AAGUID
-`DOOHICKEY-DEV001` (16 bytes, shared across flash sizes), options
-`rk=false, up=false, plat=false`, maxMsgSize `1024`, and transports `["usb"]`.
-It omits extensions, PIN protocols, algorithms, clientPin and uv. In particular,
-clientPin=false would mean supported but unset, so it is not reported.
-FIDO_2_0 is a development discovery baseline, not a claim that credential
-operations or a conformant FIDO 2.0 authenticator are implemented. Do not publish
-FIDO_2_3 or TARGET_* capabilities until their complete backend is implemented.
-Serial `ctap_ready` remains false. Select a release AAGUID/attestation policy
-before shipping; this development identifier is not a per-device identity.
-
-## Required state
-
-The backend still needs durable credential creation/replacement/deletion, actual
-PIN verification and persistent retries, token issuance and expiry, permission/RP
-binding, getNextAssertion and enumeration continuations, cancellation/timeouts,
-and explicit reset behavior. Storage read/crypto failures must not turn into an
-empty credential database, unset PIN, or reset retry counter. Cancellation must
-not drop in-progress flash writes. Serial pairing/backup grants remain separate
-from CTAP permissions; no CTAP permission here authorizes secret export.
+The target profile still needs PIN verification, persistent retries, token
+scope/expiry/RP binding, discoverable credentials and management, extension
+integration, reset and continuation handling. It remains a development build,
+not a full CTAP 2.3 implementation or compliance claim.
 
 Permissions::from_bits rejects zero, rejects defined permissions for absent
 features, and ignores undefined bits. A mask is only requested permissions; it

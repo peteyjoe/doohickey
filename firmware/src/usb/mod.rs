@@ -58,6 +58,7 @@ impl Handler for Events<'_> {
 /// static mut, flash writes, OTP provisioning, or host pairing occurs here.
 pub async fn run(peripheral: Peri<'static, USB>) -> ! {
     let info = management::Information {
+        ctap_ready: false,
         flash_size: crate::storage::FLASH_SIZE,
         insecure_test_otp: cfg!(feature = "insecure-test-otp"),
         initialization: crate::init::Report::NOT_CHECKED,

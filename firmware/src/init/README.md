@@ -63,7 +63,7 @@ identity under the sealed root. The state also carries fixed `DOOHCFG1` and
 
 The state stores `Settings::user_presence_timeout_ms`, default 30,000 and validated
 in the range 1,000..120,000, plus a random 256-bit mutable credential key.
-This setting is for the future authenticator's user-presence policy; the local
+This setting controls the authenticator's user-presence timeout; the local
 setup confirmation timings above are fixed. There is no default PIN/password or
 claim that the remaining CTAP persistent state has been initialized.
 
@@ -155,8 +155,8 @@ metadata merely to inspect it. There is no fallback between OTP backends.
 
 After `inspect()` or successful `initialize()`, `initialized()` exposes settings
 and the credential key only for verified ready state. `Report` contains only
-public diagnostics. The currently unfinished CTAP backend and serial
-authentication still report unavailable even when base initialization is ready.
+public diagnostics. The limited ES256 CTAP profile becomes available once the
+application also seeds its RNG; serial authentication remains unavailable.
 Serial remains INFO-only; opening a port or sending commands cannot authorize
 setup. Shared status is a core-0 Cell, not accessed from USB interrupts.
 

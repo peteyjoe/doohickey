@@ -72,6 +72,78 @@ fn unavailable() -> Engine<UnavailableBackend> {
 }
 
 #[test]
+fn queued_backend_owns_request_bytes_keeps_usb_live_and_drains_cancel_resync_disconnect() {
+    use ctap::exchange::Exchange;
+    let exchange = Exchange::new();
+    let mut engine = Engine::new(cbor_backend::AuthenticatorBackend(&exchange), [0, 1, 0]);
+    let channel = allocate(&mut engine);
+    for action in 0..3 {
+        let mut request = vec![2; 300];
+        assert!(send(&mut engine, channel, CBOR, &request, 0).is_none());
+        request.fill(0); // HID also clears its own input immediately after start.
+        assert_eq!(owned(engine.tick(1)), Some((channel, KEEPALIVE, vec![1])));
+        let mut owned_input = [0; 1024];
+        assert_eq!(exchange.take(&mut owned_input), Some(300));
+        assert_eq!(&owned_input[..300], &[2; 300]);
+        exchange.set_presence(true);
+        assert_eq!(owned(engine.tick(2)), Some((channel, KEEPALIVE, vec![2])));
+        match action {
+            0 => {
+                assert!(send(&mut engine, channel, CANCEL, &[], 3).is_none());
+            }
+            1 => {
+                assert!(send(&mut engine, channel, INIT, b"resync12", 3).is_none());
+            }
+            _ => {
+                engine.disconnected();
+            }
+        }
+        assert!(exchange.cancelled());
+        assert!(engine.tick(4).is_none()); // In-flight owner has not completed.
+        exchange.complete(Ok(8), b"obsolete");
+        let response = owned(engine.tick(5));
+        match action {
+            0 => assert_eq!(response, Some((channel, CBOR, vec![0x2d]))),
+            1 => assert_eq!(response.unwrap().1, INIT),
+            _ => assert!(response.is_none()),
+        }
+    }
+    let channel = allocate(&mut engine);
+    assert!(send(&mut engine, channel, CBOR, &[4], 10).is_none());
+    let mut input = [0; 1024];
+    assert_eq!(exchange.take(&mut input), Some(1));
+    exchange.complete(Ok(1), &[0xa0]);
+    assert_eq!(owned(engine.tick(11)), Some((channel, CBOR, vec![0, 0xa0])));
+    let mut stale = [0xaa; 1024];
+    assert!(exchange.result(&mut stale).is_none());
+    assert_eq!(stale, [0; 1024]);
+}
+
+#[test]
+fn credential_presence_requires_a_new_debounced_press_release_and_expires() {
+    let mut gate = ctap::presence::Gate::new(0, 1000);
+    for (pressed, now) in [
+        (true, 0),
+        (true, 100),
+        (false, 110),
+        (true, 120),
+        (false, 130),
+        (false, 160),
+        (true, 170),
+        (false, 180),
+        (true, 190),
+        (true, 220),
+        (false, 230),
+    ] {
+        assert_eq!(gate.observe(pressed, now), Ok(false));
+    }
+    assert_eq!(gate.observe(false, 260), Ok(true));
+    assert_eq!(gate.observe(false, 300), Ok(false)); // One-use result.
+    let mut expired = ctap::presence::Gate::new(0, 1000);
+    assert_eq!(expired.observe(false, 1000), Err(Status::OperationDenied));
+}
+
+#[test]
 fn discovery_returns_canonical_get_info_through_hid_reports() {
     let mut engine = Engine::new(cbor_backend::DiscoveryBackend::default(), [0, 1, 0]);
     let channel = allocate(&mut engine);
@@ -504,6 +576,7 @@ fn invalid_serial_frames_and_timeouts_require_explicit_session_reset() {
 fn public_information_reports_actual_capacity_and_rejects_sensitive_commands() {
     for capacity in [4194304, 16777216] {
         let mut handler = management::Information {
+            ctap_ready: false,
             flash_size: capacity,
             insecure_test_otp: false,
             initialization: init::Report::NOT_CHECKED,
@@ -535,6 +608,7 @@ fn public_information_reports_actual_capacity_and_rejects_sensitive_commands() {
 fn public_information_follows_live_initialization_without_claiming_ctap_readiness() {
     let state = std::cell::Cell::new(init::Report::NOT_CHECKED);
     let mut handler = management::LiveInformation {
+        ctap_ready: &std::cell::Cell::new(false),
         flash_size: 4194304,
         insecure_test_otp: true,
         initialization: &state,

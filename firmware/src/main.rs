@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+pub mod application;
 pub mod ctap;
 pub mod init;
 pub mod otp;
@@ -12,7 +13,7 @@ use core::cell::Cell;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
-use embassy_rp::gpio::{Input, Pull};
+use embassy_rp::gpio::{Input, Level, Output, Pull};
 use panic_probe as _;
 
 #[unsafe(link_section = ".bi_entries")]
@@ -31,6 +32,7 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
 async fn main(_spawner: Spawner) {
     let peripherals = embassy_rp::init(Default::default());
     let button = Input::new(peripherals.PIN_23, Pull::Up);
+    let led = Output::new(peripherals.PIN_25, Level::Low);
 
     let storage = storage::Storage::new(peripherals.FLASH, peripherals.DMA_CH0);
     let mut coordinator = init::Coordinator::new(init::DeviceBackend::new(storage));
@@ -41,21 +43,30 @@ async fn main(_spawner: Spawner) {
         report.reason.as_str()
     );
 
-    // Diagnostics stay reachable in every reported startup state. A future
-    // authenticator backend must start only after application state validates.
+    // Diagnostics stay reachable in every startup state; the application owner
+    // enables credential operations only after initialization and entropy pass.
     let status = Cell::new(report);
+    let exchange = ctap::exchange::Exchange::new();
     let information = usb::management::LiveInformation {
         flash_size: storage::FLASH_SIZE,
         insecure_test_otp: otp::IS_FLASH_BACKED,
         initialization: &status,
+        ctap_ready: &exchange.ready,
     };
     join(
         usb::run_with_handlers(
             peripherals.USB,
-            usb::cbor::DiscoveryBackend::default(),
+            usb::cbor::AuthenticatorBackend(&exchange),
             information,
         ),
-        init::run_setup(&mut coordinator, button, peripherals.TRNG, &status),
+        application::run(
+            &mut coordinator,
+            button,
+            led,
+            peripherals.TRNG,
+            &status,
+            &exchange,
+        ),
     )
     .await;
     unreachable!()

@@ -1,5 +1,5 @@
-//! Development discovery only. Do not confuse parser/crypto availability with
-//! a completed credential/PIN/extension backend or CTAP 2.3 conformance.
+//! Development discovery and operational ES256 profiles. Neither advertises
+//! unfinished PIN/UV, discoverability, extensions or CTAP 2.3 conformance.
 use super::{Result, cbor::Encoder};
 use zeroize::Zeroize;
 
@@ -9,10 +9,16 @@ pub const DEVELOPMENT_AAGUID: [u8; 16] = *b"DOOHICKEY-DEV001";
 pub const DISCOVERY_VERSION: &str = "FIDO_2_0";
 
 pub fn encode(output: &mut [u8]) -> Result<usize> {
+    encode_profile(output, false)
+}
+pub fn encode_for_authenticator(output: &mut [u8]) -> Result<usize> {
+    encode_profile(output, true)
+}
+fn encode_profile(output: &mut [u8], operational: bool) -> Result<usize> {
     output.zeroize();
     let result = (|| {
         let mut e = Encoder::new(output);
-        e.map(5)?;
+        e.map(if operational { 8 } else { 5 })?;
         e.unsigned(1)?;
         e.array(1)?;
         e.text(DISCOVERY_VERSION)?;
@@ -23,14 +29,29 @@ pub fn encode(output: &mut [u8]) -> Result<usize> {
         e.text("rk")?;
         e.boolean(false)?;
         e.text("up")?;
-        e.boolean(false)?;
+        e.boolean(operational)?;
         e.text("plat")?;
         e.boolean(false)?;
         e.unsigned(5)?;
         e.unsigned(super::cbor::MAX_MESSAGE_SIZE as u64)?;
+        if operational {
+            e.unsigned(7)?;
+            e.unsigned(super::codec::MAX_DESCRIPTORS as u64)?;
+            e.unsigned(8)?;
+            e.unsigned(60)?;
+        }
         e.unsigned(9)?;
         e.array(1)?;
         e.text("usb")?;
+        if operational {
+            e.unsigned(10)?;
+            e.array(1)?;
+            e.map(2)?;
+            e.text("alg")?;
+            e.integer(-7)?;
+            e.text("type")?;
+            e.text("public-key")?;
+        }
         Ok(e.len())
     })();
     if result.is_err() {

@@ -16,6 +16,7 @@ pub trait Handler {
 }
 
 pub struct Information {
+    pub ctap_ready: bool,
     pub flash_size: usize,
     pub insecure_test_otp: bool,
     pub initialization: crate::init::Report,
@@ -23,6 +24,7 @@ pub struct Information {
 
 /// Both futures run on core 0. This Cell is never accessed by USB interrupts.
 pub struct LiveInformation<'a> {
+    pub ctap_ready: &'a core::cell::Cell<bool>,
     pub flash_size: usize,
     pub insecure_test_otp: bool,
     pub initialization: &'a core::cell::Cell<crate::init::Report>,
@@ -30,6 +32,7 @@ pub struct LiveInformation<'a> {
 impl Handler for LiveInformation<'_> {
     fn handle(&mut self, frame: &[u8], response: &mut [u8]) -> Result<usize, Error> {
         Information {
+            ctap_ready: self.ctap_ready.get(),
             flash_size: self.flash_size,
             insecure_test_otp: self.insecure_test_otp,
             initialization: self.initialization.get(),
@@ -66,9 +69,10 @@ impl Handler for Information {
         };
         let result = write!(
             buffer,
-            "{{\"product\":\"DOOHICKEY\",\"firmware\":\"{}\",\"flash_bytes\":{},\"ctap_ready\":false,\"authentication_ready\":false,\"insecure_test_otp\":{},\"initialization\":\"{}\",\"initialization_reason\":\"{}\"}}",
+            "{{\"product\":\"DOOHICKEY\",\"firmware\":\"{}\",\"flash_bytes\":{},\"ctap_ready\":{},\"authentication_ready\":false,\"insecure_test_otp\":{},\"initialization\":\"{}\",\"initialization_reason\":\"{}\"}}",
             env!("CARGO_PKG_VERSION"),
             self.flash_size,
+            self.ctap_ready,
             self.insecure_test_otp,
             self.initialization.state.as_str(),
             self.initialization.reason.as_str()

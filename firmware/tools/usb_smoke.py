@@ -74,8 +74,9 @@ def check_ctap(device):
     # Status OK and canonical GetInfo map, including no advertised PIN/UV or
     # extensions. This is a fixed development profile, not FIDO conformance.
     expected_info = bytes.fromhex(
-        "00 a5 01 81 68 4649444f5f325f30 03 50 444f4f4849434b45592d444556303031"
-        " 04 a3 62 726b f4 62 7570 f4 64 706c6174 f4 05 19 0400 09 81 63 757362"
+        "00 a8 01 81 68 4649444f5f325f30 03 50 444f4f4849434b45592d444556303031"
+        " 04 a3 62 726b f4 62 7570 f5 64 706c6174 f4 05 19 0400 07 08 08 183c"
+        " 09 81 63 757362 0a 81 a2 63 616c67 26 64 74797065 6a 7075626c69632d6b6579"
     )
     assertion = b"\x02\xa2\x01\x6bexample.com\x02\x58\x20" + bytes(32)
     # A valid unknown member makes the CBOR request span several HID reports.
@@ -90,8 +91,8 @@ def check_ctap(device):
         (b"\x01\xa1\x18\x63\x98\x21" + bytes(33), b"\x39"),  # Collection bound.
         (b"\x01\xa1\x18\x63\xc0\x00", b"\x12"),  # Tag in unknown field.
         (b"\xff", b"\x01"),  # InvalidCommand.
-        (assertion, b"\x01"),  # Valid request, credential handler not implemented.
-        (fragmented_assertion, b"\x01"),
+        (assertion, b"\x2e"),  # No allow list: non-discoverable profile.
+        (fragmented_assertion, b"\x2e"),
         (b"\x04", expected_info),  # Recovery after malformed/unsupported inputs.
     ]
     for request, expected in checks:

@@ -1,5 +1,32 @@
 # Physical validation log
 
+## Credential repository and ES256 operations: current development image
+
+The connected 4 MiB flash-emulated-OTP board was updated with the operational
+credential build using sector programming, `--restore-unwritten --verify --reset`.
+Initialization stayed `ready / none`; serial `ctap_ready` changed to true and
+`authentication_ready` stayed false. Hardware OTP and secure boot were not written.
+
+Independent native python-fido2 checks passed: operational getInfo with ES256,
+UP, list limit 8 and ID limit 60; registration reached the physical-UP keepalive;
+cooperative CANCEL returned `0x2d`, and subsequent getInfo succeeded. No button
+confirmation was injected and no physical test credential was created.
+The HID smoke test also passed fragmentation, malformed-input errors and recovery.
+
+Host validation passed 109 tests, including the actual encrypted repository,
+real signatures, missing/corrupt data, counters, tombstones, failure injection,
+and every programmed-byte interruption of counter/tombstone writes through the
+real sequential-storage map over simulated NOR flash. Independent python-fido2
+verified public host-generated canonical registration/assertion messages and
+their self-attestation/assertion signatures. Host and embedded Clippy passed;
+both flash sizes built with default hardware and emulated OTP policies.
+
+**Still pending:** actual button-confirmed registration and assertion on the
+board, followed by firmware update and assertion using the original public
+fixture. The executable steps are in [the milestone guide](credential-milestone.md).
+The host-generated fixture is not evidence of physical user presence or physical
+credential persistence. The earlier logs below remain historical baselines.
+
 ## 2026-11-15: initialization and USB baseline
 
 Tested the user's connected RP2350 through a Raspberry Pi Debugprobe on Pico

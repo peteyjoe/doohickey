@@ -100,6 +100,14 @@ impl<B: Backend> Coordinator<B> {
     pub fn initialized(&self) -> Option<&Initialized> {
         self.initialized.as_ref()
     }
+    /// Borrow validated application state and its single backend together.
+    /// No root/key access is granted while setup/recovery/migration is pending.
+    pub fn application_parts(&mut self) -> Option<(&mut B, &Initialized)> {
+        if self.report.state != State::Ready {
+            return None;
+        }
+        Some((&mut self.backend, self.initialized.as_ref()?))
+    }
     pub fn into_backend(self) -> B {
         self.backend
     }

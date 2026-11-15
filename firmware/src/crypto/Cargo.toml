@@ -28,5 +28,7 @@ embassy-rp = { version = "0.10.0", default-features = false }
 embassy-time = { version = "0.5.1", default-features = false }
 
 [dev-dependencies]
+sequential-storage = "8.0.2"
+embedded-storage-async = "0.4.2"
 hex-literal = "0.4"
 snow = { version = "0.10", default-features = false, features = ["use-chacha20poly1305", "use-sha2", "use-curve25519", "use-getrandom"] }

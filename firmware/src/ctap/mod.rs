@@ -1,18 +1,22 @@
 //! Transport-independent CTAP 2.3 foundation for an ES256, discoverable-key,
 //! ClientPIN authenticator. See README.md for implemented scope and integration.
 //!
-//! Bounded CBOR decoding and read-only development discovery are implemented.
-//! Credential/PIN handlers still need the normative algorithms, persistence,
-//! UP/UV, timers, and cancellation before advertising their capabilities.
+//! Bounded decoding and the non-discoverable ES256 registration/assertion
+//! profile are implemented. PIN/UV, discovery and the full CTAP 2.3 profile
+//! remain targets; advertise only the behavior actually connected to USB.
 
+#[cfg(target_os = "none")]
+pub mod authenticator;
 pub mod cbor;
 pub mod codec;
 pub mod commands;
 pub mod credential_management;
 pub mod credentials;
+pub mod exchange;
 pub mod extensions;
 pub mod info;
 pub mod pin_uv;
+pub mod presence;
 pub mod status;
 
 pub use commands::{Command, Handlers, Request, RequestContext, execute};

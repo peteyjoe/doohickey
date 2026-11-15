@@ -15,6 +15,8 @@
 #[path = "storage/encrypted.rs"]
 pub mod encrypted;
 pub use encrypted::{EncryptedStorage, RecordKind};
+#[path = "storage/credentials.rs"]
+pub mod credentials;
 
 #[path = "storage/metadata.rs"]
 mod metadata;
@@ -69,6 +71,11 @@ pub enum Error {
 impl From<sequential_storage::Error<FlashError>> for Error {
     fn from(error: sequential_storage::Error<FlashError>) -> Self {
         Self::Storage(error)
+    }
+}
+impl Error {
+    pub fn is_full(&self) -> bool {
+        matches!(self, Self::Storage(sequential_storage::Error::FullStorage))
     }
 }
 

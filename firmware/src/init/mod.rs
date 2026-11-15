@@ -11,4 +11,4 @@ pub use coordinator::{
 #[cfg(target_os = "none")]
 mod device;
 #[cfg(target_os = "none")]
-pub use device::{DeviceBackend, run_setup};
+pub use device::DeviceBackend;

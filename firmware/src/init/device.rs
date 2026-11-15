@@ -1,15 +1,16 @@
-use super::{Backend, Coordinator, Error, Partition, Reason, Report, RootStatus, State};
+use super::{Backend, Error, Partition, RootStatus};
 use crate::{otp, storage};
-use core::cell::Cell;
-use doohickey_crypto::{rng::HardwareEntropy, secrets::MasterKey};
-use embassy_rp::{Peri, gpio::Input, peripherals::TRNG};
-use embassy_time::{Instant, Timer};
+use doohickey_crypto::secrets::MasterKey;
+use embassy_time::Instant;
 
 pub struct DeviceBackend<'d> {
     storage: storage::Storage<'d>,
     erased: bool,
 }
 impl<'d> DeviceBackend<'d> {
+    pub(crate) fn storage(&mut self) -> &mut storage::Storage<'d> {
+        &mut self.storage
+    }
     pub fn new(storage: storage::Storage<'d>) -> Self {
         Self {
             storage,
@@ -123,59 +124,5 @@ impl Backend for DeviceBackend<'_> {
         #[cfg(not(feature = "insecure-test-otp"))]
         let mut otp = otp::Otp::new().map_err(otp_error)?;
         otp.seal_master_key().await.map_err(otp_error)
-    }
-}
-
-/// Core-0 application task, joined with USB so diagnostics remain live while
-/// waiting for confirmation. It never times out/cancels a storage/OTP future.
-pub async fn run_setup(
-    coordinator: &mut Coordinator<DeviceBackend<'_>>,
-    button: Input<'static>,
-    trng: Peri<'static, TRNG>,
-    report: &Cell<Report>,
-) -> ! {
-    let mut entropy = HardwareEntropy::new(trng);
-    let mut gate = super::presence::PresenceGate::new(Instant::now().as_millis());
-    if report.get().permits_setup() {
-        defmt::info!("Setup: release GPIO 23, hold for 3 seconds, then release to confirm");
-    }
-    loop {
-        let now = Instant::now().as_millis();
-        if report.get().permits_setup() {
-            if gate.expired(now) {
-                gate = super::presence::PresenceGate::new(now);
-            }
-            if let Some(confirmation) = gate.observe(button.is_low(), now) {
-                report.set(Report {
-                    state: State::Initializing,
-                    reason: Reason::None,
-                });
-                match entropy.seed_rng().await {
-                    Ok(mut rng) => {
-                        let result = coordinator.initialize(confirmation, &mut rng).await;
-                        report.set(coordinator.report());
-                        defmt::info!(
-                            "Setup result: {} ({})",
-                            coordinator.report().state.as_str(),
-                            coordinator.report().reason.as_str()
-                        );
-                        if let Err(error) = result {
-                            defmt::warn!(
-                                "Setup operation returned {}; persisted status was rechecked",
-                                error.reason().as_str()
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        let mut status = coordinator.report();
-                        status.reason = Reason::EntropyUnavailable;
-                        report.set(status);
-                        defmt::warn!("TRNG unavailable; setup stopped without a fallback seed");
-                    }
-                }
-                gate = super::presence::PresenceGate::new(Instant::now().as_millis());
-            }
-        }
-        Timer::after_millis(10).await;
     }
 }
