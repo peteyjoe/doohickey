@@ -15,6 +15,8 @@
 #[path = "storage/encrypted.rs"]
 pub mod encrypted;
 pub use encrypted::{EncryptedStorage, RecordKind};
+#[path = "storage/backup.rs"]
+pub mod backup;
 #[path = "storage/credentials.rs"]
 pub mod credentials;
 
@@ -38,7 +40,7 @@ pub const METADATA_KEY: u32 = 0;
 /// Reserved for flash-backed OTP tests in every build, preventing collisions.
 pub(crate) const OTP_TEST_KEYS: core::ops::RangeInclusive<u32> = 0xffff_ff00..=0xffff_ff02;
 /// Coordinator-owned initialization, lifecycle watermark and transaction.
-pub(crate) const INITIALIZATION_KEYS: core::ops::RangeInclusive<u32> = 0xffff_fe00..=0xffff_fe04;
+pub(crate) const INITIALIZATION_KEYS: core::ops::RangeInclusive<u32> = 0xffff_fd00..=0xffff_fe04;
 
 const _: () = assert!(metadata::CURRENT_RECORD.len() <= MAX_VALUE_SIZE);
 

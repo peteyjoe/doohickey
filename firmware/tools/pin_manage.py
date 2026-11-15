@@ -22,7 +22,7 @@ def main():
         ctap = Ctap2(matches[0])
         if args.operation == "reset":
             print("Factory reset deletes all credentials and PIN. Request within 10 seconds of power-on.", flush=True)
-            print("Release GPIO 23, hold for three seconds, then release to confirm.", flush=True)
+            print("Release BOOTSEL, hold for three seconds, then release to confirm.", flush=True)
             ctap.reset()
             print("Reset completed; OTP trust keys are retained and PIN is unset.")
             return

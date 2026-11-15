@@ -104,7 +104,7 @@ impl Backend for Mock {
     async fn clear_application(&mut self) -> Result<(), Error> {
         self.before()?;
         self.records.retain(|k, _| {
-            (0xffff_fe00..=0xffff_fe04).contains(k) || (0xffff_ff00..=0xffff_ff02).contains(k)
+            (0xffff_fd00..=0xffff_fe04).contains(k) || (0xffff_ff00..=0xffff_ff02).contains(k)
         });
         self.after()
     }
@@ -157,7 +157,7 @@ impl Backend for Mock {
         Ok(self
             .records
             .keys()
-            .all(|k| (0xffff_fe00..=0xffff_fe04).contains(k)))
+            .all(|k| (0xffff_fd00..=0xffff_fe04).contains(k)))
     }
     async fn read(&mut self, key: u32, output: &mut [u8]) -> Result<Option<usize>, Error> {
         if self.fail_reads_at == Some(self.writes) {
@@ -176,7 +176,7 @@ impl Backend for Mock {
         Ok(Some(value.len()))
     }
     async fn store(&mut self, key: u32, value: &[u8]) -> Result<(), Error> {
-        assert!((0xffff_fe00..=0xffff_fe04).contains(&key));
+        assert!((0xffff_fd00..=0xffff_fe04).contains(&key));
         self.before()?;
         self.records.insert(key, value.to_vec());
         self.after()
@@ -859,4 +859,46 @@ fn version_geometry_and_confirmation_checks_fail_closed() {
     assert_eq!(ready(c.inspect()).reason, Reason::GeometryMismatch);
     assert!(ready(c.reset(confirmation(), &mut rng(86))).is_err());
     assert_eq!(c.into_backend().writes, writes);
+}
+
+#[test]
+fn staged_restore_resumes_without_importing_pin_or_replacing_otp() {
+    for after in [false, true] {
+        for cut in 0..11 {
+            let mut b = initialized().into_backend();
+            let root = b.root;
+            b.records.insert(0x02000000, b"old PIN".to_vec());
+            b.fail_at = Some(b.writes + cut);
+            b.fail_after = after;
+            let mut c = Coordinator::new(b);
+            let mut snapshot = [0; 40];
+            snapshot[..8].copy_from_slice(b"DOOHBAK1");
+            snapshot[8..].fill(91);
+            let success = ready(c.restore_backup(&snapshot, &mut rng(92))).is_ok();
+            let mut b = c.into_backend();
+            b.fail_at = None;
+            let pending = b.records.contains_key(&init::lifecycle::TRANSACTION_KEY);
+            let mut c = Coordinator::new(b);
+            ready(c.inspect());
+            if pending {
+                ready(c.resume_transition(&mut rng(93))).unwrap();
+            }
+            if success || pending {
+                assert_eq!(
+                    c.initialized()
+                        .unwrap()
+                        .credential_key()
+                        .provisioning_bytes(),
+                    &[91; 32]
+                );
+            }
+            let b = c.into_backend();
+            assert_eq!(b.root, root);
+            assert_eq!(b.root_writes, 1);
+            let restored = !b.records.contains_key(&0x02000000);
+            if success || pending {
+                assert!(restored);
+            }
+        }
+    }
 }

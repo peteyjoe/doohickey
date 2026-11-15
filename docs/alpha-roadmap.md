@@ -1,3 +1,5 @@
+> Update: [alpha 0.3 implementation and limits](alpha-serial-and-web.md). Serial authentication, bounded encrypted backups, staged restore and website-final workflows are implemented. Secure boot is deferred for this first alpha; physical qualification remains a release gate.
+
 # Alpha release roadmap
 
 Status: proposed implementation plan, researched against upstream sources on

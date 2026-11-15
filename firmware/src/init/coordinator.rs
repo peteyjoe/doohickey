@@ -87,6 +87,9 @@ pub trait Backend {
             flash_size: 4 * 1024 * 1024,
         }
     }
+    async fn restore_record(&mut self, _key: u32, _value: &[u8]) -> Result<(), Error> {
+        Err(Error::StorageUnavailable)
+    }
     async fn clear_application(&mut self) -> Result<(), Error> {
         Err(Error::StorageUnavailable)
     }
@@ -241,12 +244,12 @@ impl<B: Backend> Coordinator<B> {
                 .await?;
             if let Some(transaction) = transaction {
                 return Ok(Report {
-                    state: if transaction[49] == 1 {
+                    state: if transaction[49] != 2 {
                         State::ResetRequired
                     } else {
                         State::MigrationRequired
                     },
-                    reason: if transaction[49] == 1 {
+                    reason: if transaction[49] != 2 {
                         Reason::ResetInterrupted
                     } else {
                         Reason::UpgradeInterrupted
@@ -476,7 +479,7 @@ impl<B: Backend> Coordinator<B> {
         key: u32,
         context: &[u8],
     ) -> Result<Option<Zeroizing<[u8; N]>>, Error> {
-        let mut envelope = Zeroizing::new([0; 512]);
+        let mut envelope = Zeroizing::new([0; 1100]);
         let Some(n) = self.backend.read(key, &mut envelope[..]).await? else {
             return Ok(None);
         };
@@ -498,12 +501,12 @@ impl<B: Backend> Coordinator<B> {
         rng: &mut impl CryptoRngCore,
     ) -> Result<(), Error> {
         let root = self.backend.load_root().await?;
-        let mut envelope = Zeroizing::new([0; 512]);
+        let mut envelope = Zeroizing::new([0; 1100]);
         let n = SecretBox::from_master_key(&root)
             .seal(rng, context, plaintext, &mut envelope[..])
             .map_err(crypto_error)?;
         self.backend.store(key, &envelope[..n]).await?;
-        let mut check = Zeroizing::new([0; 512]);
+        let mut check = Zeroizing::new([0; 1100]);
         if self.backend.read(key, &mut check[..]).await? != Some(n)
             || !bool::from(check[..n].ct_eq(&envelope[..n]))
         {
@@ -576,7 +579,7 @@ impl<B: Backend> Coordinator<B> {
             Upgrade::DowngradeBlocked => return Err(Error::DowngradeBlocked),
             _ => return Err(Error::UnsupportedVersion),
         }
-        if !matches!(bytes[49], 1 | 2) {
+        if !matches!(bytes[49], 1..=3) {
             return Err(Error::InvalidInitialization);
         }
         let journal = Journal::decode(&bytes[50..107])?;
@@ -725,6 +728,91 @@ impl<B: Backend> Coordinator<B> {
         }
         Ok(report)
     }
+    pub async fn restore_backup(
+        &mut self,
+        bytes: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Report, Error> {
+        super::snapshot::validate(bytes).map_err(|_| Error::InvalidInitialization)?;
+        if self.inspect().await.state != State::Ready {
+            return Err(Error::SetupNotAllowed);
+        }
+        let mut id = [0; 16];
+        rng.try_fill_bytes(&mut id)
+            .map_err(|_| Error::EntropyUnavailable)?;
+        if id == [0; 16] {
+            return Err(Error::EntropyUnavailable);
+        }
+        let journal = Journal {
+            mode: RootMode::Existing,
+            id,
+        };
+        let key: &[u8; 32] = bytes[8..40].try_into().unwrap();
+        if !records::valid_secret(key) {
+            return Err(Error::InvalidInitialization);
+        }
+        // Header authenticates full snapshot length and digest before any deletion.
+        for (i, chunk) in bytes.chunks(900).enumerate() {
+            self.write_authenticated(
+                0xffff_fd01 + i as u32,
+                b"DOOHICKEY restore chunk v1",
+                chunk,
+                rng,
+            )
+            .await?;
+        }
+        let mut header = [0; 36];
+        header[..4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+        header[4..].copy_from_slice(&sha256(bytes));
+        self.write_authenticated(0xffff_fd00, b"DOOHICKEY restore header v1", &header, rng)
+            .await?;
+        let state = records::encode_state(&journal, key);
+        self.begin_transition(3, &journal, &state[..], rng).await?;
+        self.resume_transition(rng).await
+    }
+    async fn restore_staged(&mut self) -> Result<(), Error> {
+        let header = self
+            .read_authenticated::<36>(0xffff_fd00, b"DOOHICKEY restore header v1")
+            .await?
+            .ok_or(Error::InvalidInitialization)?;
+        let n = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
+        if !(40..=32768).contains(&n) {
+            return Err(Error::InvalidInitialization);
+        }
+        let mut bytes = Zeroizing::new([0; 32768]);
+        let root = self.backend.load_root().await?;
+        let cipher = SecretBox::from_master_key(&root);
+        for (i, chunk) in bytes[..n].chunks_mut(900).enumerate() {
+            let mut envelope = Zeroizing::new([0; 1024]);
+            let len = self
+                .backend
+                .read(0xffff_fd01 + i as u32, &mut envelope[..])
+                .await?
+                .ok_or(Error::InvalidInitialization)?;
+            if cipher
+                .open(b"DOOHICKEY restore chunk v1", &envelope[..len], chunk)
+                .map_err(|_| Error::AuthenticationFailed)?
+                != chunk.len()
+            {
+                return Err(Error::InvalidInitialization);
+            }
+        }
+        if !bool::from(sha256(&bytes[..n]).ct_eq(&header[4..])) {
+            return Err(Error::AuthenticationFailed);
+        }
+        super::snapshot::validate(&bytes[..n]).map_err(|_| Error::InvalidInitialization)?;
+        self.backend.clear_application().await?;
+        let mut p = 40;
+        while p < n {
+            let key = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+            let len = u16::from_le_bytes(bytes[p + 4..p + 6].try_into().unwrap()) as usize;
+            self.backend
+                .restore_record(key, &bytes[p + 6..p + 6 + len])
+                .await?;
+            p += 6 + len;
+        }
+        Ok(())
+    }
     async fn finish_transition(&mut self, rng: &mut impl CryptoRngCore) -> Result<(), Error> {
         let partition = self.backend.partition().await?;
         if !matches!(partition, Partition::Compatible | Partition::Migrate) {
@@ -733,7 +821,9 @@ impl<B: Backend> Coordinator<B> {
         let bytes = self.transaction().await?.ok_or(Error::SetupNotAllowed)?;
         self.check_lifecycle(partition, true).await?;
         let journal = Journal::decode(&bytes[50..107])?;
-        if bytes[49] == 1 {
+        if bytes[49] == 3 {
+            self.restore_staged().await?;
+        } else if bytes[49] == 1 {
             self.backend.clear_application().await?;
         }
         self.backend

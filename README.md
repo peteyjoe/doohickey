@@ -1,3 +1,5 @@
+> Alpha 0.3 now implements [serial pairing, encrypted backup/restore and browser workflows](docs/alpha-serial-and-web.md) in `website-final`. Secure boot is deferred; hardware qualification is pending.
+
 # RP2350 FIDO2 development
 
 This flake provides an Embassy/Rust firmware toolchain and Node.js 26 LTS with
@@ -174,8 +176,8 @@ The `firmware/` crate runs the [initialization coordinator](firmware/src/init/RE
 after hardware setup, then starts a composite USB device with FIDO HID transport
 and CDC ACM serial. It reports startup status through RTT/defmt and serial INFO.
 ES256 allow-list and discoverable credential flows, including PIN-based UV,
-are implemented. Serial authentication still needs its application backend. Eligible device setup uses a fresh three-second hold and release on
-GPIO 23 (active low, pull-up). It verifies durable settings, credential key and
+are implemented. Serial authentication and bounded encrypted backups use the application owner. Eligible device setup uses a fresh three-second hold and release on
+the on-board BOOTSEL button. It verifies durable settings, credential key and
 completion records before reporting base initialization ready. Real root writes
 additionally require the explicit `otp-provisioning` feature; use
 `insecure-test-otp` for flash-only development. Secure boot remains separate.
@@ -400,7 +402,7 @@ are `c0de:d001`. HID supports CTAPHID INIT/PING, fragmentation, arbitration,
 timeouts, cancellation, and keepalives. Bounded canonical CBOR decoding and a
 public `authenticatorGetInfo` response are connected. The development FIDO_2_0
 profile supports ES256 registration, packed self-attestation, discoverable
-accounts and allow-list assertions with fresh GPIO 23 confirmation (GPIO 25 flashes).
+accounts and allow-list assertions with fresh BOOTSEL confirmation (GPIO 25 flashes).
 Protocol-2 ClientPIN, PIN-based UV and [discoverable credentials](docs/discoverable-credentials.md)
 are implemented, along with [PIN-authorized management and credential extensions](docs/credential-management-and-extensions.md) and [reset/recovery and firmware upgrades](docs/reset-and-upgrades.md). See [PIN setup and tests](docs/client-pin.md). See the
 [credential milestone guide](docs/credential-milestone.md) for encrypted storage

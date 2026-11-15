@@ -48,7 +48,7 @@ def main():
     def keepalive(status):
         nonlocal notified
         if status == 2 and not notified:
-            print("Press and release GPIO 23 now (GPIO 25 LED flashes).", flush=True)
+            print("Press and release BOOTSEL now (GPIO 25 LED flashes).", flush=True)
             notified = True
 
     try:

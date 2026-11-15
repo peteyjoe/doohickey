@@ -23,7 +23,7 @@ DEFMT_LOG=info cargo run --release --features insecure-test-otp --target-dir tar
 1. Use the correct flash capacity and keep the same OTP backend for subsequent
    test updates. The emulator stores its root in plaintext flash; use test data.
 2. Inspect RTT or serial `INFO`. A blank test device reports `setup_required`.
-3. With the button connected between GPIO 23 and GND, release it, hold it for
+3. Using the on-board BOOTSEL button, release it, hold it for
    **three seconds**, and release again. Both releases debounce for 30 ms.
    A button already held at boot is not confirmation.
 4. The firmware seeds its RNG from the hardware TRNG, initializes, verifies the

@@ -43,9 +43,11 @@ pub fn upgrade(stored: &str, running: &str) -> Upgrade {
     };
     if old > new {
         Upgrade::DowngradeBlocked
-    } else if stored == running && matches!(running, "0.1.0" | "0.2.0") {
+    } else if stored == running && matches!(running, "0.1.0" | "0.2.0" | "0.3.0") {
         Upgrade::Current
-    } else if stored == "0.1.0" && running == "0.2.0" {
+    } else if (stored == "0.1.0" && matches!(running, "0.2.0" | "0.3.0"))
+        || (stored == "0.2.0" && running == "0.3.0")
+    {
         Upgrade::Migrate
     } else {
         Upgrade::Unsupported

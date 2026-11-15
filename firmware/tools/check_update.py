@@ -10,7 +10,7 @@ FLASH_BASE = 0x10000000
 STORAGE_OFFSET = 3 * 1024 * 1024
 
 
-def check_image(image: bytes, flash_mb: int) -> dict:
+def check_image(image: bytes, flash_mb: int, allow_provisioning: bool = False) -> dict:
     if len(image) < 52 or image[:7] != b"\x7fELF\x01\x01\x01":
         raise ValueError("Expected a 32-bit little-endian ELF")
     kind, machine = struct.unpack_from("<HH", image, 16)
@@ -43,12 +43,12 @@ def check_image(image: bytes, flash_mb: int) -> dict:
     descriptor = descriptors[0]
     version_bytes = descriptor[8:40].rstrip(b"\0")
     version = version_bytes.decode("ascii")
-    if version != "0.2.0" or descriptor[8:40] != version_bytes.ljust(32, b"\0"):
+    if version != "0.3.0" or descriptor[8:40] != version_bytes.ljust(32, b"\0"):
         raise ValueError("Unsupported firmware release")
     flash_size, storage_start = struct.unpack_from("<II", descriptor, 40)
     if flash_mb not in (4, 16) or flash_size != flash_mb * 1024 * 1024 or storage_start != STORAGE_OFFSET:
         raise ValueError("Image geometry does not match device")
-    if any(descriptor[48:]):
+    if any(descriptor[49:]) or descriptor[48] not in ((0, 2) if allow_provisioning else (0,)):
         raise ValueError("Ordinary updates must not contain OTP provisioning/test features")
     return {
         "product": "DOOHICKEY", "version": version,

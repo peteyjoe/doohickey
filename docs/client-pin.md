@@ -54,7 +54,7 @@ resynchronization, channel switching and PIN changes invalidate tokens.
 No tokens or key-agreement private keys survive reboot.
 
 Verified PIN tokens set UV in authenticatorData. They do not stand in for UP:
-normal credential operations still need a fresh GPIO 23 press/release, with
+normal credential operations still need a fresh BOOTSEL press/release, with
 GPIO 25 flashing. `uv=true` without a PIN token remains an unsupported request
 for built-in verification. Setting a PIN makes new credentials require token
 authorization. Existing allow-list credentials can still produce UP-only or

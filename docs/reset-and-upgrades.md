@@ -11,7 +11,7 @@ Use authenticatorReset (`0x07`) through a native/platform FIDO management tool.
 Reconnect power immediately before requesting reset: the request must reach the
 application within ten seconds of boot. Timing uses the device's monotonic clock,
 not host timestamps; slow boot/USB enumeration can shorten the usable window.
-Release GPIO 23, hold it for **three seconds**, then release. GPIO 25 flashes
+Release BOOTSEL, hold it for **three seconds**, then release. GPIO 25 flashes
 rapidly while the CTAP request waits. A held-at-boot button cannot confirm reset.
 The confirmation window is 30 seconds, with debounce on both releases.
 

@@ -1,0 +1,30 @@
+{
+  "4mb": {
+    "version": "0.3.0",
+    "flash_bytes": 4194304,
+    "otp_provisioning": false,
+    "secure_boot": false,
+    "sha256": "f01ac563f5f5cdb265da6a6fa165fdcb68c0bc841314d206a5aa46018593ea99"
+  },
+  "4mb-setup": {
+    "version": "0.3.0",
+    "flash_bytes": 4194304,
+    "otp_provisioning": true,
+    "secure_boot": false,
+    "sha256": "1d06f205519caf9a69245b9e665bcbc1219031cec7e0f765516d3df6972ac66d"
+  },
+  "16mb": {
+    "version": "0.3.0",
+    "flash_bytes": 16777216,
+    "otp_provisioning": false,
+    "secure_boot": false,
+    "sha256": "2b42813cee45a4ee75eeeb14fa354f52117dfa282ddf4c31aef134a12cd7730f"
+  },
+  "16mb-setup": {
+    "version": "0.3.0",
+    "flash_bytes": 16777216,
+    "otp_provisioning": true,
+    "secure_boot": false,
+    "sha256": "4be48a7b53efa64cca06e3081106bdc41c9e8c8460dcf319221b64c31f6db821"
+  }
+}

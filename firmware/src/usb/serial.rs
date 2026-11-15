@@ -1,5 +1,5 @@
-//! CDC ACM transport and public information handler. No credential commands,
-//! key generation, Noise pairing, or authentication bypass is provided here.
+//! CDC framing and asynchronous handler dispatch. Credential authorization and
+//! pairing live in the single application owner, never in the USB task.
 use super::{
     SessionState,
     framing::{Decoder, MAX_FRAME_SIZE},
@@ -103,7 +103,9 @@ pub async fn run<'d, D: Driver<'d>>(
                     }
                     match decoder.push(byte, now) {
                         Ok(Some(frame)) => {
-                            let length = handler.handle(frame, &mut response[..]);
+                            let length = handler
+                                .handle_async(sessions, frame, &mut response[..])
+                                .await;
                             let body = match length {
                                 Ok(n) if n > 0 && n <= MAX_FRAME_SIZE => &response[..n],
                                 _ => {

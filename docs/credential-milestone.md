@@ -14,7 +14,7 @@ implemented; use `--pin` with the credential tool once a PIN is set.
 The HID backend copies requests to `ctap::exchange::Exchange`. USB keeps servicing
 keepalives, cancel and disconnect while the owner awaits presence or storage.
 Cancellation never drops a flash future. Disconnect/resynchronization suppress
-obsolete replies. GPIO 25 flashes while confirmation is needed; release GPIO 23,
+obsolete replies. GPIO 25 flashes while confirmation is needed; release BOOTSEL,
 press it, then release it. Every edge is debounced for 30 ms. A held button and
 the earlier setup confirmation cannot authorize a new request. Timeout comes
 from the initialized settings (30 seconds by default).
@@ -82,7 +82,7 @@ cd firmware
 ```
 
 Connect the board's native USB port, not only the debug probe. Press/release
-GPIO 23 when prompted. The tool verifies packed self-attestation independently
+BOOTSEL when prompted. The tool verifies packed self-attestation independently
 and saves only the credential ID/public key/AAGUID/counter. Registration creates
 one persistent test credential for `doohickey.test`. Keep the fixture: this
 non-discoverable credential cannot be looked up without its ID.

@@ -35,6 +35,27 @@ fn otp_error(error: otp::Error) -> Error {
     }
 }
 impl Backend for DeviceBackend<'_> {
+    async fn restore_record(&mut self, key: u32, value: &[u8]) -> Result<(), Error> {
+        if !storage::backup::allowed(key) {
+            return Err(Error::InvalidInitialization);
+        }
+        self.storage
+            .store(key, value)
+            .await
+            .map_err(storage_error)?;
+        let mut check = zeroize::Zeroizing::new([0; 1024]);
+        if self
+            .storage
+            .read(key, &mut check[..])
+            .await
+            .map_err(storage_error)?
+            != Some(value.len())
+            || check[..value.len()] != *value
+        {
+            return Err(Error::VerificationFailed);
+        }
+        Ok(())
+    }
     fn geometry(&self) -> super::lifecycle::Geometry {
         super::lifecycle::Geometry {
             storage_start: storage::STORAGE_START,

@@ -1,3 +1,5 @@
+> Alpha 0.3 adds the [authenticated serial backup service](../../../docs/alpha-serial-and-web.md); the INFO-only adapter below remains the standalone discovery profile.
+
 # Composite USB
 
 The main firmware now runs Embassy USB 0.6 with the RP2350 USB driver. One
@@ -14,7 +16,7 @@ HID reports, and CDC data packets are 64 bytes; HID polling interval is 5 ms.
 The builder owns descriptor buffers and class state inside the pinned USB
 future. USB control, HID and CDC run concurrently with the local initialization
 confirmation loop after startup inspection. Inspection never generates keys;
-explicit GPIO 23 confirmation can initialize eligible devices using the selected
+explicit BOOTSEL confirmation can initialize eligible devices using the selected
 OTP backend/build policy. See [durable initialization](../init/README.md).
 
 VID/PID **`c0de:d001` are development placeholders**, centralized in `mod.rs`;

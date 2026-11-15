@@ -1,22 +1,19 @@
 //! Core-0 single owner of initialization, credentials, entropy and physical UP.
 //! USB stays live in the joined future; storage operations are never cancelled.
 use crate::{
+    button::Button,
     ctap::{self, Request, Status, authenticator::Presence, codec::Scratch, exchange::Exchange},
     init::{self, Coordinator, DeviceBackend, Reason, Report, State},
     storage::credentials::Repository,
 };
 use core::cell::Cell;
 use doohickey_crypto::rng::HardwareEntropy;
-use embassy_rp::{
-    Peri,
-    gpio::{Input, Output},
-    peripherals::TRNG,
-};
+use embassy_rp::{Peri, gpio::Output, peripherals::TRNG};
 use embassy_time::{Instant, Timer};
 use zeroize::Zeroizing;
 
 struct ButtonPresence<'a, 'd> {
-    button: &'a Input<'d>,
+    button: &'a mut Button<'d>,
     led: &'a mut Output<'d>,
     exchange: &'a Exchange,
     timeout: u32,
@@ -27,7 +24,7 @@ impl Presence for ButtonPresence<'_, '_> {
     }
     async fn confirm(&mut self) -> ctap::Result<()> {
         self.exchange.set_presence(true);
-        defmt::info!("CTAP: press and release GPIO 23 to confirm");
+        defmt::info!("CTAP: press and release BOOTSEL to confirm");
         let mut gate = ctap::presence::Gate::new(Instant::now().as_millis(), self.timeout);
         let result = loop {
             if self.cancelled() {
@@ -39,7 +36,7 @@ impl Presence for ButtonPresence<'_, '_> {
             } else {
                 self.led.set_low();
             }
-            match gate.observe(self.button.is_low(), now) {
+            match gate.observe(self.button.pressed(), now) {
                 Ok(true) => break Ok(()),
                 Err(error) => break Err(error),
                 Ok(false) => {}
@@ -56,12 +53,12 @@ impl Presence for ButtonPresence<'_, '_> {
 }
 
 async fn confirm_reset(
-    button: &Input<'_>,
+    button: &mut Button<'_>,
     led: &mut Output<'_>,
     exchange: &Exchange,
 ) -> ctap::Result<init::presence::Confirmation> {
     exchange.set_presence(true);
-    defmt::warn!("Reset deletes all credentials and PIN: release GPIO 23, hold 3 seconds, release");
+    defmt::warn!("Reset deletes all credentials and PIN: release BOOTSEL, hold 3 seconds, release");
     let mut gate = init::presence::PresenceGate::new(Instant::now().as_millis());
     let result = loop {
         let now = Instant::now().as_millis();
@@ -76,7 +73,7 @@ async fn confirm_reset(
         } else {
             led.set_low();
         }
-        if let Some(confirmation) = gate.observe(button.is_low(), now) {
+        if let Some(confirmation) = gate.observe(button.pressed(), now) {
             break Ok(confirmation);
         }
         Timer::after_millis(10).await;
@@ -88,25 +85,29 @@ async fn confirm_reset(
 
 pub async fn run(
     coordinator: &mut Coordinator<DeviceBackend<'_>>,
-    button: Input<'static>,
+    mut button: Button<'static>,
     mut led: Output<'static>,
     trng: Peri<'static, TRNG>,
     report: &Cell<Report>,
     exchange: &Exchange,
+    serial_exchange: &Exchange,
 ) -> ! {
+    let mut serial = crate::serial_service::Service::default();
+    let mut serial_epoch = serial_exchange.epoch.get();
     let mut entropy = HardwareEntropy::new(trng);
     let mut rng = None;
     let mut session = ctap::pin_session::Session::default();
+    serial.invalidate();
     let mut epoch = exchange.epoch.get();
     let mut retry_entropy_at = 0;
     let mut retry_transition_at = 0;
     let mut setup_gate = init::presence::PresenceGate::new(Instant::now().as_millis());
     if report.get().permits_setup() {
-        defmt::info!("Setup: release GPIO 23, hold for 3 seconds, then release to confirm");
+        defmt::info!("Setup: release BOOTSEL, hold for 3 seconds, then release to confirm");
     }
     if report.get().state == State::RecoveryRequired {
         defmt::warn!(
-            "Recovery: a fresh 3-second GPIO 23 hold/release requests destructive reset; OTP is retained"
+            "Recovery: a fresh 3-second BOOTSEL hold/release requests destructive reset; OTP is retained"
         );
     }
     let mut input = Zeroizing::new([0; ctap::exchange::CAPACITY]);
@@ -118,6 +119,7 @@ pub async fn run(
             epoch = exchange.epoch.get();
         }
         session.expire(now);
+        serial.expire(now);
         // A committed pending transaction already contains authenticated local
         // authorization. Never expose CTAP between its individual writes.
         if matches!(
@@ -127,6 +129,7 @@ pub async fn run(
         {
             exchange.ready.set(false);
             session = ctap::pin_session::Session::default();
+            serial.invalidate();
             rng = None;
             match entropy.seed_rng().await {
                 Ok(mut seeded) => {
@@ -143,9 +146,10 @@ pub async fn run(
             if setup_gate.expired(now) {
                 setup_gate = init::presence::PresenceGate::new(now);
             }
-            if let Some(confirmation) = setup_gate.observe(button.is_low(), now) {
+            if let Some(confirmation) = setup_gate.observe(button.pressed(), now) {
                 exchange.ready.set(false);
                 session = ctap::pin_session::Session::default();
+                serial.invalidate();
                 rng = None;
                 if let Ok(mut seeded) = entropy.seed_rng().await {
                     let _ = coordinator.reset(confirmation, &mut seeded).await;
@@ -158,7 +162,7 @@ pub async fn run(
             if setup_gate.expired(now) {
                 setup_gate = init::presence::PresenceGate::new(now);
             }
-            if let Some(confirmation) = setup_gate.observe(button.is_low(), now) {
+            if let Some(confirmation) = setup_gate.observe(button.pressed(), now) {
                 report.set(Report {
                     state: State::Initializing,
                     reason: Reason::None,
@@ -215,6 +219,47 @@ pub async fn run(
                 }
             }
         }
+        if serial_epoch != serial_exchange.epoch.get() {
+            serial.invalidate();
+            serial_epoch = serial_exchange.epoch.get();
+        }
+        if let Some(len) = serial_exchange.take(&mut input) {
+            let result = if serial_exchange.cancelled() {
+                Err(Status::KeepaliveCancel)
+            } else if report.get().state != State::Ready || !exchange.ready.get() {
+                Err(Status::OperationDenied)
+            } else if let Some(random) = rng.as_mut() {
+                let mut presence = ButtonPresence {
+                    button: &mut button,
+                    led: &mut led,
+                    exchange: serial_exchange,
+                    timeout: 30000,
+                };
+                serial
+                    .handle(
+                        coordinator,
+                        random,
+                        &mut presence,
+                        &input[..len],
+                        &mut output[..],
+                    )
+                    .await
+            } else {
+                Err(Status::OperationDenied)
+            };
+            if coordinator.report().state != State::Ready
+                || result.is_ok() && !input.starts_with(b"AUTH") && input.first() == Some(&0x80)
+            {
+                session.invalidate();
+            }
+            if report.get().state == State::Ready || coordinator.report().state != State::Ready {
+                report.set(coordinator.report());
+            }
+            serial_exchange.complete(result, &output[..]);
+            use zeroize::Zeroize;
+            input.zeroize();
+            output.zeroize();
+        }
         if let Some(len) = exchange.take(&mut input) {
             let mut scratch = Scratch::new();
             let result = match ctap::codec::decode(&input[..len], &mut scratch) {
@@ -225,7 +270,7 @@ pub async fn run(
                         Err(Status::NotAllowed)
                     } else {
                         session.invalidate();
-                        match confirm_reset(&button, &mut led, exchange).await {
+                        match confirm_reset(&mut button, &mut led, exchange).await {
                             Err(error) => Err(error),
                             Ok(confirmation) => {
                                 exchange.ready.set(false);
@@ -242,6 +287,7 @@ pub async fn run(
                                 report.set(coordinator.report());
                                 if result.is_ok() {
                                     session = ctap::pin_session::Session::default();
+                                    serial.invalidate();
                                 }
                                 result
                             }
@@ -257,7 +303,7 @@ pub async fn run(
                         let mut repository =
                             Repository::new(backend.storage(), initialized.credential_key(), rng);
                         let mut presence = ButtonPresence {
-                            button: &button,
+                            button: &mut button,
                             led: &mut led,
                             exchange,
                             timeout: initialized.settings().user_presence_timeout_ms,

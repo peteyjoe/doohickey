@@ -1,6 +1,7 @@
 //! Durable initialization, reset and upgrade transactions. Secure-boot trust
 //! provisioning stays separate; reset never programs OTP. See README.md.
 pub mod lifecycle;
+pub mod snapshot;
 mod state;
 pub use state::{Reason, Report, State};
 mod coordinator;
