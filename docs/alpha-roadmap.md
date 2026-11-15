@@ -21,7 +21,7 @@ the browser implementation work. This roadmap is the release checklist.
 | Startup | Local button-confirmed setup/resume, durable settings and credential-key bundle, separate authenticated completion, startup ready/recovery states | Physical qualification, future settings/reset transactions and browser setup orchestration |
 | Storage | Fixed 3 MiB boundary; byte-value map; metadata; encrypted single-value wrapper | Stable application key allocation/encodings, transaction/recovery policy, compatibility checks and migrations |
 | Keys | TRNG-seeded CSPRNG; guarded OTP reader; opt-in hardware writes; separate insecure flash test backend | Qualified provisioning lifecycle, replaceable credential key under the immutable root, reset behavior |
-| CTAP | Typed commands, dispatch and crypto helpers | Bounded CBOR/COSE codec, stateful algorithms, persistent credentials/PIN/retries, user presence, actual USB backend |
+| CTAP | Bounded CBOR/COSE decoder, development getInfo over HID, typed dispatch and crypto helpers | Stateful algorithms, persistent credentials/PIN/retries, user presence, stateful USB backend |
 | USB | FIDO HID transport and framed CDC ACM; public INFO including startup state | Readiness integration, restricted setup protocol, recovery/update entry workflow |
 | Web app | Serial console, INFO display, text/hex traffic and tests | Installation/update wizard, WebUSB transport, artifact verification, setup/resume UX and WebAuthn test flow |
 | Secure boot | Public-key-hash storage API, not activation | Signed artifact pipeline, complete policy/provisioning implementation, verified recovery and key-rotation plan |
@@ -179,8 +179,9 @@ reset invalidates both discoverable credentials and old wrapped credential IDs.
 
 ## Milestone 2: make the CTAP profile operational
 
-- [ ] Implement bounded CBOR/COSE input/output with explicit length, nesting,
-  collection, duplicate-key and malformed-input policy.
+- [x] Implement bounded canonical CBOR/COSE input decoding and development
+  getInfo output with explicit length, nesting, collection, duplicate-key and
+  malformed-input policy. Credential response encoders follow with handlers.
 - [ ] Connect a single stateful authenticator owner to the existing HID backend
   and typed handlers. Integrate real user presence, deadlines, keepalives and
   cancellation at safe points; do not cancel partially completed flash writes.

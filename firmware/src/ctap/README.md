@@ -8,13 +8,14 @@ authenticator-config, or vendor backup modules are added in this step.
 
 This is **not yet a working CTAP authenticator**. The typed command boundary,
 dispatch, algorithm selection, permission parsing, credential-protection filter,
-and protocol-2 hmac-secret helper are implemented. CBOR/COSE decoding/encoding,
-the stateful command algorithms, durable credential/PIN storage, user-presence
-integration, and command deadlines are not connected. FIDO USB HID framing now
-lives in [usb](../usb/README.md), with a default backend that rejects unfinished
-commands. TARGET_* constants describe
-the intended profile; they are not a completed getInfo response or a compliance
-claim. The main application runs startup inspection before USB transport, then
+and protocol-2 hmac-secret helper are implemented. Bounded CBOR/COSE decoding
+and canonical getInfo encoding are connected to [USB HID](../usb/README.md).
+The stateful command algorithms, durable credential/PIN storage, user-presence
+integration, and command deadlines are not connected. The default discovery
+backend returns InvalidCommand for structurally valid unfinished commands;
+malformed requests return decoding errors. TARGET_* constants describe
+the intended profile, not the discovery response or a compliance claim.
+The main application runs startup inspection before USB transport, then
 supports local button-confirmed base initialization. This provisions a root only
 under the selected OTP build policy and prepares settings/credential key; it
 does not implement CTAP credential operations. The [alpha roadmap](../../../docs/alpha-roadmap.md) tracks
@@ -25,6 +26,9 @@ the application algorithms and qualification still required.
 | File | Responsibility |
 | --- | --- |
 | `mod.rs` | Module entry and target profile constants |
+| `cbor.rs` | Canonical validation, borrowed views and fixed-buffer encoder |
+| `codec.rs` | Bounded command decoding into typed requests and fixed scratch arrays |
+| `info.rs` | Read-only development getInfo response |
 | `commands.rs` | Core command IDs, typed requests, mandatory backend interface, dispatch |
 | `status.rs` | Nonzero CTAP error codes and result type |
 | `credentials.rs` | Credential command inputs and ES256 algorithm selection |
@@ -52,13 +56,54 @@ provided output and return its length. Reset and selection return an empty body.
 The transport adds the leading CTAP status byte. A backend error, or an invalid
 reported length, clears the whole response buffer. Errors cannot encode success.
 
-The future codec must validate canonical CBOR, bound collection/text lengths and
-nesting, reject duplicate keys according to the chosen strict policy, and validate
-COSE EC2/P-256/alg=-25 keys before constructing SEC1 agreement points. Request
-models retain absent versus empty allow/exclude lists and absent versus explicit
-UV options. Preserve the exact encoded credential-management subCommandParams
-bytes for MAC verification instead of re-encoding a subset of decoded fields.
+`codec::decode` accepts the command byte followed by its CBOR parameters. It
+borrows strings and bytes from the input and list slots/SEC1 points from
+`codec::Scratch`. The input and scratch must outlive the request. The entire
+document is validated before any unknown fields are ignored. Credential-management
+subCommandParams retain their exact original canonical bytes for MAC verification,
+including unknown members. Absent versus empty lists/auth parameters and explicit
+UV/rk options remain distinguishable. COSE agreement keys must be EC2/P-256,
+alg=-25 with 32-byte coordinates and a valid curve point.
+
+| Bound | Limit |
+| --- | --- |
+| Full command, including command byte | 1024 bytes |
+| Container nesting | 4 maps/arrays |
+| Total CBOR items, including keys | 256 |
+| Members/elements per map/array | 32 |
+| Allow/exclude descriptors | 8 |
+| Credential algorithm preferences | 16 |
+| Attestation format preferences | 8 |
+
+Lengths use checked arithmetic and never control allocation. The strict policy
+rejects nonminimal integers/lengths, duplicate or unsorted map keys, tags,
+indefinite lengths, invalid UTF-8, trailing data, and excessive nesting with
+InvalidCbor. Key ordering uses CTAP's major-type/encoded-length/byte ordering,
+not RFC 8949 length-first ordering. Complex map keys are unsupported. Float
+widths are retained as required by CTAP. Size/item/collection limits return
+RequestTooLarge; wrong field types return CborUnexpectedType; missing top-level
+required parameters return MissingParameter. Command-specific authorization,
+policy, value lengths and normative error precedence still belong in handlers.
 Do not log requests containing account or PIN information.
+
+## Development getInfo
+
+`usb::cbor::DiscoveryBackend` decodes synchronously and retains only a pending
+getInfo bit. It never retains request references after HID clears the receive
+buffer. Future asynchronous/stateful adapters must own copied request bytes.
+Discovery works in every initialization state and does not access secrets or
+write storage. The transport prefixes the canonical response with status OK.
+
+The current response contains versions `["FIDO_2_0"]`, model AAGUID
+`DOOHICKEY-DEV001` (16 bytes, shared across flash sizes), options
+`rk=false, up=false, plat=false`, maxMsgSize `1024`, and transports `["usb"]`.
+It omits extensions, PIN protocols, algorithms, clientPin and uv. In particular,
+clientPin=false would mean supported but unset, so it is not reported.
+FIDO_2_0 is a development discovery baseline, not a claim that credential
+operations or a conformant FIDO 2.0 authenticator are implemented. Do not publish
+FIDO_2_3 or TARGET_* capabilities until their complete backend is implemented.
+Serial `ctap_ready` remains false. Select a release AAGUID/attestation policy
+before shipping; this development identifier is not a per-device identity.
 
 ## Required state
 
@@ -96,7 +141,8 @@ The optional minPinLength and enterprise-attestation features are not advertised
 so their conditional authenticatorConfig subcommands are outside this scope.
 
 Host tests import the actual modules and exercise permission parsing, dispatch
-and failure cleanup, credential protection, algorithm preferences, and hmac-secret
+and failure cleanup, bounded/canonical decoding, golden getInfo bytes and HID
+integration, credential protection, algorithm preferences, and hmac-secret
 with Python-generated HMAC fixtures, both UV modes, one/two salts, persistence,
 tampering, and malformed inputs. A recording backend tests routing only; it does
 not implement CTAP command semantics.
@@ -104,6 +150,7 @@ not implement CTAP command semantics.
 ```sh
 cd firmware
 cargo test -p doohickey-crypto --test ctap --target x86_64-unknown-linux-gnu
+cargo test -p doohickey-crypto --test ctap_codec --test usb --target x86_64-unknown-linux-gnu
 ```
 
 Use the appropriate host target on macOS/ARM Linux as described in the crypto

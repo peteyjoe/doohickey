@@ -1,4 +1,5 @@
 //! Composite USB: FIDO HID interface 0, CDC ACM control/data interfaces 1/2.
+pub mod cbor;
 pub mod ctaphid;
 pub mod framing;
 mod hid;
@@ -61,7 +62,7 @@ pub async fn run(peripheral: Peri<'static, USB>) -> ! {
         insecure_test_otp: cfg!(feature = "insecure-test-otp"),
         initialization: crate::init::Report::NOT_CHECKED,
     };
-    run_with_handlers(peripheral, ctaphid::UnavailableBackend, info).await
+    run_with_handlers(peripheral, cbor::DiscoveryBackend::default(), info).await
 }
 
 /// Application integration point. A CBOR backend can forward to a single

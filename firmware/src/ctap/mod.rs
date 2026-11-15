@@ -1,15 +1,17 @@
 //! Transport-independent CTAP 2.3 foundation for an ES256, discoverable-key,
 //! ClientPIN authenticator. See README.md for implemented scope and integration.
 //!
-//! This is a typed command boundary, not a CBOR decoder or a working device
-//! backend. No command handlers have default success implementations. A backend
-//! must implement the normative command algorithms, persistence, UP/UV, timers,
-//! and cancellation before exposing these commands on a transport.
+//! Bounded CBOR decoding and read-only development discovery are implemented.
+//! Credential/PIN handlers still need the normative algorithms, persistence,
+//! UP/UV, timers, and cancellation before advertising their capabilities.
 
+pub mod cbor;
+pub mod codec;
 pub mod commands;
 pub mod credential_management;
 pub mod credentials;
 pub mod extensions;
+pub mod info;
 pub mod pin_uv;
 pub mod status;
 

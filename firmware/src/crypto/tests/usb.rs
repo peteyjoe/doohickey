@@ -1,4 +1,6 @@
 //! Actual USB transport engines tested without MMIO or a physical device.
+#[path = "../../usb/cbor.rs"]
+mod cbor_backend;
 #[allow(dead_code, unused_imports)]
 #[path = "../../ctap/mod.rs"]
 mod ctap;
@@ -67,6 +69,93 @@ fn allocate<B: Backend>(engine: &mut Engine<B>) -> u32 {
 }
 fn unavailable() -> Engine<UnavailableBackend> {
     Engine::new(UnavailableBackend, [0, 1, 0])
+}
+
+#[test]
+fn discovery_returns_canonical_get_info_through_hid_reports() {
+    let mut engine = Engine::new(cbor_backend::DiscoveryBackend::default(), [0, 1, 0]);
+    let channel = allocate(&mut engine);
+    assert!(send(&mut engine, channel, CBOR, &[4], 1).is_none());
+    let (cid, command, body) = owned(engine.tick(2)).unwrap();
+    assert_eq!((cid, command, body[0]), (channel, CBOR, 0));
+    let info = ctap::cbor::decode(&body[1..]).unwrap();
+    let mut versions = info.get_int(1).unwrap().unwrap().array().unwrap();
+    assert_eq!(
+        versions.read_next().unwrap().unwrap().text().unwrap(),
+        "FIDO_2_0"
+    );
+    assert!(versions.read_next().unwrap().is_none());
+    assert_eq!(
+        info.get_int(3).unwrap().unwrap().bytes().unwrap(),
+        b"DOOHICKEY-DEV001"
+    );
+    assert_eq!(
+        info.get_int(5).unwrap().unwrap().unsigned().unwrap(),
+        MAX_MESSAGE_SIZE as u64
+    );
+    assert!(info.get_int(6).unwrap().is_none()); // No PIN backend.
+    let packets = reports(cid, command, &body);
+    assert_eq!(packets.len(), 1);
+    assert_eq!(&packets[0][7..7 + body.len()], body);
+    assert!(engine.tick(3).is_none());
+}
+
+#[test]
+fn discovery_reports_decode_errors_and_recovers_for_subsequent_get_info() {
+    let mut engine = Engine::new(cbor_backend::DiscoveryBackend::default(), [0, 1, 0]);
+    let channel = allocate(&mut engine);
+    let mut assertion = b"\x02\xa2\x01\x6bexample.com\x02\x58\x20".to_vec();
+    assertion.extend([0; 32]);
+    for (request, status) in [
+        (&[4, 0xa0][..], Status::InvalidLength),
+        (&[1, 0xa2, 1, 0, 1, 1][..], Status::InvalidCbor),
+        (&[1, 0xa0][..], Status::MissingParameter),
+        (&[1, 0xf6][..], Status::CborUnexpectedType),
+        (&[0xff][..], Status::InvalidCommand),
+        (assertion.as_slice(), Status::InvalidCommand),
+    ] {
+        assert_eq!(
+            send(&mut engine, channel, CBOR, request, 1),
+            Some((channel, CBOR, vec![status as u8]))
+        );
+        assert!(send(&mut engine, channel, CBOR, &[4], 2).is_none());
+        let response = owned(engine.tick(3)).unwrap();
+        assert_eq!(response.2[0], 0);
+        assert!(ctap::cbor::decode(&response.2[1..]).is_ok());
+    }
+}
+
+#[test]
+fn discovery_drops_obsolete_requests_and_clears_failed_output() {
+    let mut backend = cbor_backend::DiscoveryBackend::default();
+    for reset in 0..2 {
+        backend.start(1, &[4]).unwrap();
+        assert_eq!(backend.start(1, &[4]), Err(Status::NotAllowed));
+        if reset == 0 {
+            backend.resynchronize(1);
+        } else {
+            backend.disconnected();
+        }
+        let mut output = [0xaa; 100];
+        assert!(matches!(
+            backend.poll(&mut output),
+            Completion::Ready(Err(Status::NotAllowed))
+        ));
+        assert_eq!(output, [0; 100]);
+    }
+    backend.start(2, &[4]).unwrap();
+    let mut small = [0xaa; 10];
+    assert!(matches!(
+        backend.poll(&mut small),
+        Completion::Ready(Err(Status::Other))
+    ));
+    assert_eq!(small, [0; 10]);
+    backend.start(2, &[4]).unwrap();
+    backend.cancel(); // Immediate public discovery has no presence operation.
+    assert!(matches!(
+        backend.poll(&mut [0; 100]),
+        Completion::Ready(Ok(_))
+    ));
 }
 
 #[test]

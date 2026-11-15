@@ -397,8 +397,11 @@ may remain physically in flash after replacement.
 [`firmware/src/usb`](firmware/src/usb/README.md) uses Embassy USB to expose FIDO
 HID plus CDC ACM serial through the board's native USB port. Development VID/PID
 are `c0de:d001`. HID supports CTAPHID INIT/PING, fragmentation, arbitration,
-timeouts, cancellation, and keepalives. Known CTAP commands currently return
-OperationDenied until the command backend is implemented.
+timeouts, cancellation, and keepalives. Bounded canonical CBOR decoding and a
+public `authenticatorGetInfo` response are connected. The development discovery
+profile reports `FIDO_2_0`, USB and a 1024-byte message limit, with no PIN, UV,
+resident-key or extension support advertised. Credential operations remain
+unimplemented and return InvalidCommand; malformed requests return decoding errors.
 
 CDC accepts length-prefixed binary frames (`u16` big-endian length followed by
 payload), with a public `INFO` request returning device information. The current
@@ -421,9 +424,11 @@ module layer for an ES256 authenticator with discoverable credentials and
 ClientPIN protocol 2. It provides typed command/backend interfaces, status codes,
 credential-management inputs, and mandatory extension helpers for `credProtect`
 and `hmac-secret`. The existing `crypto::ctap` module supplies cryptographic
-primitives. USB transport is wired; CBOR and storage-backed command algorithms are still needed;
-this is not yet an operational or conformant CTAP authenticator. Target profile
-constants must not be advertised as completed capabilities.
+primitives. The heap-free decoder validates canonical CBOR and COSE agreement
+keys and constructs borrowed requests using fixed-size scratch space. Read-only
+getInfo is available; storage-backed command algorithms are still needed. This
+is not yet an operational or conformant CTAP authenticator. Target `FIDO_2_3`
+profile constants are not advertised as completed capabilities.
 
 ## OTP keys
 

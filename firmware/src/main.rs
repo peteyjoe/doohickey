@@ -52,7 +52,7 @@ async fn main(_spawner: Spawner) {
     join(
         usb::run_with_handlers(
             peripherals.USB,
-            usb::ctaphid::UnavailableBackend,
+            usb::cbor::DiscoveryBackend::default(),
             information,
         ),
         init::run_setup(&mut coordinator, button, peripherals.TRNG, &status),

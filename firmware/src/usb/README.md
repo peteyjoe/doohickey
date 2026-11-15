@@ -35,14 +35,18 @@ not advertised. Channels are unique for this firmware boot and invalidated by
 USB reset/unconfiguration.
 
 **This is a working transport, not a complete CTAP authenticator.** The default
-UnavailableBackend returns CTAP OperationDenied (`0x27`) for known CBOR commands,
-including getInfo, and InvalidCommand for unknown commands. It never returns a
-made-up `FIDO_2_3` capability list or credential/PIN success. Browsers/FIDO clients
-will not be able to register or authenticate until the codec and real command
-backend are connected.
+`cbor::DiscoveryBackend` uses the bounded [CTAP codec](../ctap/README.md) and
+returns a canonical, public getInfo response. The development profile contains
+`FIDO_2_0`, a model AAGUID, USB and the 1024-byte limit; rk/up/plat are false and
+PIN, UV and extensions are omitted. This is an experimental discovery profile,
+not a conformance claim. Structurally valid unfinished commands return
+InvalidCommand (`0x01`); malformed requests return decoding errors. Registration,
+authentication and `FIDO_2_3` capabilities require the real command backend.
+Serial readiness flags remain false.
 
 `Backend::start` receives `command_byte || CBOR_parameters`; it must copy/queue
-the input before returning. `poll` returns a response CBOR body or a CTAP error,
+the input before returning if it needs to retain the request. The discovery
+adapter decodes synchronously and retains no input references. `poll` returns a response CBOR body or a CTAP error,
 or Pending with Processing/UserPresence progress. The transport supplies the
 leading CTAP status byte and keepalives every 100 ms or on progress changes.
 Implement the adapter with a single authenticator/repository owner; it must not
@@ -106,8 +110,9 @@ python3 -m venv /tmp/doohickey-usb-test
 ```
 
 Use `--skip-hid --serial PORT` for CDC only, or omit `--serial` for HID only.
-The tool verifies INIT nonce/CID/capabilities, a fragmented 200-byte PING, explicit
-CTAP backend denial, and public serial information. It does not modify flash or
+The tool verifies INIT nonce/CID/capabilities, a fragmented 200-byte PING,
+the canonical development getInfo response, malformed/unsupported request errors,
+subsequent recovery, and public serial information. It does not modify flash or
 OTP. Install narrowly scoped Linux hidraw/tty rules as described in the root
 README, and substitute the actual development VID/PID. WSL also needs the native
 USB device attached via usbipd, separately from the debug probe.

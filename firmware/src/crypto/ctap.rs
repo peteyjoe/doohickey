@@ -20,6 +20,17 @@ pub fn sha256(message: &[u8]) -> [u8; 32] {
     Sha256::digest(message).into()
 }
 
+/// Decoder-side validation of an uncompressed EC2/P-256 agreement public key.
+/// COSE kty/curve/algorithm checks remain the protocol decoder's responsibility.
+pub fn validate_key_agreement(point: &[u8; 65]) -> Result<(), Error> {
+    if point[0] != 4 {
+        return Err(Error::InvalidKey);
+    }
+    PublicKey::from_sec1_bytes(point)
+        .map(|_| ())
+        .map_err(|_| Error::InvalidKey)
+}
+
 pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key size");
     mac.update(message);

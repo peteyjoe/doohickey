@@ -56,6 +56,52 @@ def receive_hid(device, channel, command):
     raise TimeoutError("HID response timed out")
 
 
+def check_ctap(device):
+    """Exercise the development discovery profile using independent wire fixtures."""
+    nonce = os.urandom(8)
+    send_hid(device, 0xFFFFFFFF, 0x06, nonce)
+    response = receive_hid(device, 0xFFFFFFFF, 0x06)
+    if len(response) != 17 or response[:8] != nonce or response[12] != 2:
+        raise RuntimeError("invalid INIT response")
+    channel = struct.unpack(">I", response[8:12])[0]
+    if channel in (0, 0xFFFFFFFF) or response[16] != 0x0C:
+        raise RuntimeError("unexpected channel/capabilities")
+    payload = bytes(range(200))
+    send_hid(device, channel, 0x01, payload)
+    if receive_hid(device, channel, 0x01) != payload:
+        raise RuntimeError("fragmented PING mismatch")
+
+    # Status OK and canonical GetInfo map, including no advertised PIN/UV or
+    # extensions. This is a fixed development profile, not FIDO conformance.
+    expected_info = bytes.fromhex(
+        "00 a5 01 81 68 4649444f5f325f30 03 50 444f4f4849434b45592d444556303031"
+        " 04 a3 62 726b f4 62 7570 f4 64 706c6174 f4 05 19 0400 09 81 63 757362"
+    )
+    assertion = b"\x02\xa2\x01\x6bexample.com\x02\x58\x20" + bytes(32)
+    # A valid unknown member makes the CBOR request span several HID reports.
+    fragmented_assertion = b"\x02\xa3" + assertion[2:] + b"\x18\x63\x59\x01\x00" + bytes(range(256))
+    checks = [
+        (b"\x04", expected_info),
+        (b"\x04\xa0", b"\x03"),  # Unexpected parameters: InvalidLength.
+        (b"\x01\xa2\x01\x00\x01\x01", b"\x12"),  # Duplicate key.
+        (b"\x01\xa0", b"\x14"),  # MissingParameter.
+        (b"\x01\xf6", b"\x11"),  # CborUnexpectedType.
+        (b"\x01\xa1\x18\x63\x81\x81\x81\x81\x00", b"\x12"),  # Five levels.
+        (b"\x01\xa1\x18\x63\x98\x21" + bytes(33), b"\x39"),  # Collection bound.
+        (b"\x01\xa1\x18\x63\xc0\x00", b"\x12"),  # Tag in unknown field.
+        (b"\xff", b"\x01"),  # InvalidCommand.
+        (assertion, b"\x01"),  # Valid request, credential handler not implemented.
+        (fragmented_assertion, b"\x01"),
+        (b"\x04", expected_info),  # Recovery after malformed/unsupported inputs.
+    ]
+    for request, expected in checks:
+        send_hid(device, channel, 0x10, request)
+        response = receive_hid(device, channel, 0x10)
+        if response != expected:
+            raise RuntimeError(f"CTAP command {request[0]:02x}: unexpected response {response.hex()}")
+    print("HID: INIT, fragmented PING, GetInfo, bounded decoding, error responses and recovery passed")
+
+
 def check_hid(vid, pid):
     import hid
     devices = [d for d in hid.enumerate(vid, pid)
@@ -65,23 +111,7 @@ def check_hid(vid, pid):
     device = hid.device()
     try:
         device.open_path(devices[0]["path"])
-        nonce = os.urandom(8)
-        send_hid(device, 0xFFFFFFFF, 0x06, nonce)
-        response = receive_hid(device, 0xFFFFFFFF, 0x06)
-        if len(response) < 17 or response[:8] != nonce or response[12] != 2:
-            raise RuntimeError("invalid INIT response")
-        channel = struct.unpack(">I", response[8:12])[0]
-        if channel in (0, 0xFFFFFFFF) or response[16] != 0x0C:
-            raise RuntimeError("unexpected channel/capabilities")
-        payload = bytes(range(200))
-        send_hid(device, channel, 0x01, payload)
-        if receive_hid(device, channel, 0x01) != payload:
-            raise RuntimeError("fragmented PING mismatch")
-        send_hid(device, channel, 0x10, b"\x04")
-        response = receive_hid(device, channel, 0x10)
-        if response != b"\x27":
-            raise RuntimeError("expected OperationDenied from the unfinished CTAP backend")
-        print("HID: INIT, fragmented PING, and explicit CTAP backend denial passed")
+        check_ctap(device)
     finally:
         device.close()
 
