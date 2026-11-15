@@ -12,5 +12,6 @@ import SiteHeader from '~/components/SiteHeader.vue'
     <HowItWorks />
     <FlashSection />
     <TeamSection />
+    <DemoSection />
   </UApp>
 </template>

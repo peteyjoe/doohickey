@@ -14,8 +14,9 @@
 // fill in real names and roles once teammates reply
 const members = [
   { name: 'Bryan Ramirez', role: 'Front end' },
-  { name: 'Peter ', role: 'Back end' },
+  { name: 'Peter Forbes', role: 'Back end' },
   { name: 'Joshua Klepinger', role: 'Full stack' }
+  { name: 'Isreal Estrada', role: 'System Designer' } 
 ]
 </script>
 
