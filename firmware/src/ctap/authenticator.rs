@@ -191,7 +191,7 @@ pub async fn execute_with_session<R: CryptoRngCore>(
                     )
                     .await;
                     let expired = verified && !session.grant_valid(presence.now_ms());
-                    session.consume();
+                    // session.consume();   <- removed for getAssertion
                     if expired {
                         Err(Status::PinAuthInvalid)
                     } else {
