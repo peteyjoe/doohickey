@@ -1,0 +1,7 @@
+export default defineAppConfig({
+  ui: {
+    colors: {
+      primary: 'orange', // turns the Connect and Flash buttons orange
+    },
+  },
+})
